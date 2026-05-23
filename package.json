@@ -1,0 +1,10 @@
+{
+  "name": "my-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node daemon.js",
+    "logs": "tail -f logs/daemon.log"
+  },
+  "engines": { "node": ">=18" }
+}

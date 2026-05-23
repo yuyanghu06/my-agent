@@ -1,0 +1,8 @@
+{
+  "hotkeys": {
+    "togglePin": "",
+    "toggleRecording": "CommandOrControl+Shift+1",
+    "toggleAutoScreenshot": "CommandOrControl+Shift+S",
+    "snapScreenshot": ""
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "personal-agent",
+  "title": "Personal Agent",
+  "description": "Talk to the local claude-agent daemon and manage its lifecycle from Raycast.",
+  "icon": "extension-icon.png",
+  "author": "yuyang",
+  "categories": ["Productivity", "Developer Tools"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "ask",
+      "title": "Ask Claude",
+      "subtitle": "Personal Agent",
+      "description": "Send a query to the persistent claude session and stream the response.",
+      "mode": "view",
+      "arguments": [
+        {
+          "name": "query",
+          "type": "text",
+          "placeholder": "Ask anything...",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "restart",
+      "title": "Restart Agent Daemon",
+      "subtitle": "Personal Agent",
+      "description": "Restart the launchd daemon so newly added MCP servers are picked up.",
+      "mode": "no-view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "socketPath",
+      "title": "Daemon Socket Path",
+      "description": "Unix domain socket the agent daemon listens on.",
+      "type": "textfield",
+      "default": "/tmp/claude-agent.sock",
+      "required": false
+    },
+    {
+      "name": "launchdLabel",
+      "title": "LaunchAgent Label",
+      "description": "Label used by launchctl for the agent daemon.",
+      "type": "textfield",
+      "default": "com.yuyang.agent",
+      "required": false
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.84.0",
+    "@raycast/utils": "^1.18.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.11",
+    "@types/node": "^22.5.0",
+    "@types/react": "^18.3.5",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "ray lint",
+    "publish": "ray publish"
+  }
+}

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reply</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body class="reply-window">
+    <div id="reply-app">
+      <div class="reply-header" data-tauri-drag-region>
+        <span class="reply-mode-tag" id="reply-mode-tag">REPLY</span>
+        <span class="reply-quote" id="reply-quote"></span>
+        <button class="reply-close" id="reply-close" title="Close (Esc)">×</button>
+      </div>
+      <div class="reply-body" id="reply-body"></div>
+      <textarea
+        id="reply-composer"
+        rows="2"
+        autofocus
+        spellcheck="false"
+        placeholder="Reply…"
+      ></textarea>
+    </div>
+    <script type="module" src="/src/reply.ts"></script>
+  </body>
+</html>
