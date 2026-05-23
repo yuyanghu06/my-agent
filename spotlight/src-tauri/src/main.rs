@@ -275,6 +275,17 @@ async fn open_reply_window(
     w.set_position(Position::Logical(LogicalPosition::new(cx, cy)))
         .map_err(|e| e.to_string())?;
     eprintln!("[spotlight] reply window placed at ({}, {})", cx, cy);
+
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+        let _ = apply_vibrancy(
+            &w,
+            NSVisualEffectMaterial::Sheet,
+            Some(NSVisualEffectState::Active),
+            Some(14.0),
+        );
+    }
     Ok(())
 }
 
@@ -621,7 +632,19 @@ fn main() {
 
             #[cfg(target_os = "macos")]
             {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+                // Light translucent material — matches macOS Spotlight's look:
+                // desktop colors visibly bleed through the frosted glass. Was
+                // HudWindow (dark), which fought with the warm/light theme.
+                let _ = apply_vibrancy(
+                    &window,
+                    NSVisualEffectMaterial::Sheet,
+                    Some(NSVisualEffectState::Active),
+                    Some(16.0),
+                );
 
                 // Disable AppKit's implicit window-resize animation so setSize
                 // takes effect on the next frame instead of easing over ~200ms.

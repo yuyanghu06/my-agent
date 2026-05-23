@@ -1,17 +1,52 @@
-/* Apple Spotlight aesthetic — frosted, single column, subtle */
+/* ============================================================
+   Spotlight — Orange Liquid Glass
+   Apple Spotlight aesthetic, heavily frosted, warm amber tint.
+   Window vibrancy is applied via NSVisualEffectView (HudWindow);
+   everything below assumes the window backdrop is already blurred.
+   ============================================================ */
 :root {
-  --fg: rgba(255, 255, 255, 0.96);
-  --fg-muted: rgba(255, 255, 255, 0.55);
-  --bg-tint: rgba(40, 40, 44, 0.55);
-  --hairline: rgba(255, 255, 255, 0.08);
-  --accent: rgba(255, 255, 255, 0.85);
-  --code-bg: rgba(255, 255, 255, 0.06);
-  --radius: 14px;
+  /* Dark warm text on a warm cream background — high contrast, readable */
+  --fg: rgba(40, 22, 8, 0.96);
+  --fg-soft: rgba(55, 32, 14, 0.82);
+  --fg-muted: rgba(80, 50, 22, 0.62);
+  --fg-dim: rgba(100, 68, 35, 0.42);
+
+  --accent: rgba(200, 95, 25, 1);
+  --accent-soft: rgba(210, 110, 40, 0.62);
+  --accent-glow: rgba(220, 120, 50, 0.30);
+
+  /* Layered warm tints over the cream base */
+  --tint-soft: rgba(200, 110, 40, 0.06);
+  --tint: rgba(200, 100, 30, 0.10);
+  --tint-strong: rgba(200, 90, 20, 0.18);
+  --tint-deep: rgba(180, 70, 10, 0.28);
+
+  --glass-top: rgba(255, 255, 255, 0.55);
+  --glass-edge: rgba(160, 110, 60, 0.30);
+  --glass-inner: rgba(255, 235, 200, 0.30);
+
+  --hairline: rgba(100, 60, 20, 0.12);
+  --hairline-strong: rgba(100, 60, 20, 0.22);
+
+  --code-bg: rgba(60, 35, 12, 0.08);
+
+  --radius: 16px;
+  --radius-sm: 8px;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
     system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Kill default browser focus rings everywhere. The bar's own bg is the
+   focus signal — no gray browser outline needed. */
+*:focus,
+*:focus-visible,
+*:focus-within { outline: none !important; }
+
+/* Global hide utility — wins over any element-specific display rules so
+   chips/overlays/etc. with `class="X hidden"` actually disappear. */
+.hidden { display: none !important; }
 
 html, body {
   background: transparent;
@@ -25,88 +60,359 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+::selection { background: rgba(255, 165, 70, 0.35); color: var(--fg); }
+
+/* ============================================================
+   The window shell — transparent so NSVisualEffectView shows
+   through. The orange "liquid glass" look is built up in layers:
+   1. radial warm glow at top center
+   2. soft diagonal sheen
+   3. inset highlight on top edge
+   4. amber-tinted hairline border
+   5. warm outer shadow
+   ============================================================ */
 #app {
+  position: relative;
   width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
-  transform-origin: center top;
-  background: rgb(28, 28, 32);
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius);
   overflow: hidden;
+  /* Translucent light-orange tint — Sheet vibrancy material does the heavy
+     lifting; this just adds a warm orange wash so desktop colors come
+     through with an amber cast (matches macOS Spotlight's behavior). */
+  background:
+    linear-gradient(180deg, rgba(255, 200, 130, 0.18) 0%, rgba(255, 180, 110, 0.14) 100%);
+  border: none;
+  /* No inner rim — just the macOS native window shadow (from
+     tauri.conf shadow:true) wrapping the rounded corners externally. */
+  box-shadow: none;
 }
 
+/* Sheen layer removed — was adding a diagonal highlight that read as a rim
+   against the flat cream background. */
+#app::before { content: none; }
+
+#app > * { position: relative; z-index: 1; }
+
 #app.appearing {
-  animation: spotlight-appear 0.32s cubic-bezier(0.2, 0.9, 0.4, 1);
+  animation: spotlight-appear 0.22s cubic-bezier(0.2, 0.9, 0.4, 1);
 }
+/* Window itself doesn't animate, so scaling #app leaves the vibrancy backdrop
+   exposed around the shrunken card. Keep transforms small (translate only) so
+   the card never visibly diverges from its window frame. */
 @keyframes spotlight-appear {
-  from { opacity: 0; transform: scale(0.86) translateY(-16px); filter: blur(4px); }
-  to   { opacity: 1; transform: scale(1)    translateY(0);     filter: blur(0); }
+  from { opacity: 0; transform: translateY(-6px); filter: blur(2px); }
+  to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
 }
 
 /* ============================================================
-   Composer (#5: textarea wrap, auto-grow, capped) +
-              (#3/#4: attachments live INSIDE the bar above input)
+   Search bar
    ============================================================ */
-
 .bar {
   flex: 0 0 auto;
-  min-height: 48px;
-  padding: 0 38px 0 18px;
-  border-bottom: 1px solid transparent;
+  min-height: 52px;
+  padding: 0 116px 0 16px;
   display: flex;
   align-items: stretch;
   -webkit-app-region: drag;
   cursor: default;
   position: relative;
 }
-.bar.has-response { border-bottom-color: var(--hairline); }
+.bar.has-response { border-bottom: 1px solid var(--hairline); }
+
+.bar-icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  margin-right: 10px;
+  color: var(--accent);
+  opacity: 0.9;
+  filter: drop-shadow(0 0 4px rgba(255, 150, 60, 0.28));
+  -webkit-app-region: drag;
+  transition: color 0.18s ease, filter 0.18s ease;
+}
+body.daemon-down .bar-icon {
+  color: rgba(180, 35, 35, 0.95);
+  filter: drop-shadow(0 0 4px rgba(180, 35, 35, 0.35));
+}
+body.daemon-down #composer::placeholder {
+  color: rgba(170, 30, 30, 0.65);
+}
 
 .bar-actions {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  right: 10px;
   display: flex;
   gap: 2px;
   z-index: 10;
   -webkit-app-region: no-drag;
 }
 .bar-btn {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: color 0.12s, background 0.12s, transform 0.12s;
+  transition: color 0.14s, background 0.14s, transform 0.14s, box-shadow 0.14s;
 }
 .bar-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--tint);
   color: var(--fg);
+  box-shadow: inset 0 0 0 0.5px var(--hairline-strong);
 }
 #pin-btn.active {
-  color: rgba(255, 200, 90, 0.95);
+  color: var(--accent);
   transform: rotate(-30deg);
+  background: var(--tint-strong);
+  box-shadow:
+    inset 0 0 0 0.5px rgba(255, 180, 100, 0.32),
+    0 0 8px var(--accent-glow);
 }
-#pin-btn.active:hover { background: rgba(255, 200, 90, 0.12); }
+#pin-btn.active:hover { background: var(--tint-deep); }
 #record-btn.active {
   color: rgba(255, 90, 90, 0.95);
   animation: record-pulse 1.4s ease-in-out infinite;
+  background: rgba(255, 90, 90, 0.12);
 }
-#record-btn.active:hover { background: rgba(255, 90, 90, 0.12); }
-#autoshot-btn.active { color: rgba(120, 200, 255, 0.95); }
-#autoshot-btn.active:hover { background: rgba(120, 200, 255, 0.12); }
+#record-btn.active:hover { background: rgba(255, 90, 90, 0.18); }
+#autoshot-btn.active {
+  color: var(--accent);
+  background: var(--tint);
+  box-shadow: inset 0 0 0 0.5px var(--hairline-strong);
+}
+#autoshot-btn.active:hover { background: var(--tint-strong); }
 @keyframes record-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  50% { opacity: 0.5; }
 }
 
+/* ============================================================
+   Composer
+   ============================================================ */
+.composer-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 0;
+  /* Wrapper itself is drag-able — the empty vertical space above/below
+     the centered textarea should drag the window. Specific children
+     (textarea, attachments, reply chip) opt out with no-drag below. */
+  -webkit-app-region: drag;
+  min-width: 0;
+}
+
+#composer {
+  /* `flex: 0 0 auto` instead of `1 1 auto` — the textarea must NOT grow to
+     fill composer-wrap's vertical space. If it does, every click in the bar
+     lands on the textarea (no-drag) and the user can't drag the window. */
+  flex: 0 0 auto;
+  /* Width is set dynamically by JS (sizeComposerWidth in main.ts) to match
+     the actual content width. Everything around the textarea is then
+     composer-wrap (drag-enabled) so the whole bar drags like the left side
+     already does. Start at a sensible minimum so the input is clickable
+     even before JS runs. */
+  width: 140px;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: var(--fg);
+  caret-color: var(--accent);
+  letter-spacing: -0.01em;
+  resize: none;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 28px;
+  max-height: 180px;
+  -webkit-app-region: no-drag;
+  -webkit-appearance: none;
+  appearance: none;
+}
+/* Caret is hidden when the field has no focus (avoids a "rectangle"
+   sitting next to the icon on idle launch) but appears as soon as the
+   user clicks/tabs in OR has typed content. */
+#composer { caret-color: transparent; }
+#composer:focus,
+#composer.has-content { caret-color: var(--accent); }
+#composer::placeholder {
+  color: var(--fg-muted);
+  font-weight: 400;
+  opacity: 1;
+}
+
+.composer-wrap.streaming #composer {
+  caret-color: var(--accent);
+}
+
+/* ============================================================
+   Attachments row
+   ============================================================ */
+.attachments {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 6px;
+  -webkit-app-region: no-drag;
+}
+.attachments.hidden { display: none; }
+
+.thumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--tint-soft);
+  border: 1px solid var(--hairline);
+  box-shadow: inset 0 1px 0 var(--glass-top);
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb-x {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(40, 18, 0, 0.62);
+  color: #fff;
+  font-size: 11px;
+  cursor: default;
+  user-select: none;
+  backdrop-filter: blur(6px);
+}
+.thumb-x:hover { background: rgba(40, 18, 0, 0.85); }
+
+.reply-quote-chip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--tint-soft);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 8px 28px 8px 14px;
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--fg-soft);
+  max-height: 100px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+  box-shadow: inset 0 1px 0 var(--glass-top);
+  -webkit-app-region: no-drag;
+}
+.reply-quote-chip.hidden { display: none; }
+.reply-quote-chip::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent-soft);
+}
+.reply-quote-chip-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--tint);
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: default;
+  user-select: none;
+}
+.reply-quote-chip-x:hover { background: var(--tint-strong); color: var(--fg); }
+
+.paste-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 8px;
+  background: var(--tint);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--fg);
+  cursor: pointer;
+  height: 24px;
+  align-self: center;
+  box-shadow: inset 0 1px 0 var(--glass-top);
+}
+.paste-chip:hover { background: var(--tint-strong); }
+.paste-chip-tag {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  background: rgba(255, 170, 80, 0.14);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.paste-chip-meta { color: var(--fg-muted); font-weight: 500; }
+.paste-chip-x {
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--tint);
+  color: var(--fg-muted);
+  font-size: 10px;
+  margin-left: 2px;
+}
+.paste-chip-x:hover { background: var(--tint-strong); color: var(--fg); }
+
+.file-chip { cursor: default; max-width: 280px; }
+.file-chip-name {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.history-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 0;
+}
+
+/* ============================================================
+   Settings panel
+   ============================================================ */
 .settings-panel {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -128,7 +434,7 @@ html, body {
 .settings-section-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--fg-muted);
+  color: var(--fg-soft);
   margin-bottom: 8px;
 }
 .settings-row {
@@ -137,15 +443,12 @@ html, body {
   gap: 8px;
   margin-bottom: 6px;
 }
-.settings-row label {
-  flex: 1;
-  font-size: 13px;
-}
+.settings-row label { flex: 1; font-size: 13px; }
 .hotkey-input {
   flex: 0 0 200px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--tint-soft);
   border: 1px solid var(--hairline);
-  border-radius: 5px;
+  border-radius: 6px;
   padding: 4px 8px;
   color: var(--fg);
   font: inherit;
@@ -157,8 +460,9 @@ html, body {
 }
 .hotkey-input:focus,
 .hotkey-input.recording {
-  border-color: rgba(255, 200, 90, 0.6);
-  background: rgba(255, 200, 90, 0.08);
+  border-color: var(--accent-soft);
+  background: var(--tint-strong);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 .hotkey-clear {
   background: transparent;
@@ -181,216 +485,20 @@ html, body {
   margin-top: 10px;
 }
 .settings-footer button {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--hairline);
-  border-radius: 5px;
+  background: var(--tint);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
   color: var(--fg);
   padding: 4px 12px;
   font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
-.settings-footer button:hover { background: rgba(255, 255, 255, 0.14); }
-
-.composer-wrap {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 8px 0;
-  -webkit-app-region: no-drag;
-  min-width: 0;
-}
-
-#composer {
-  flex: 1 1 auto;
-  width: 100%;
-  background: transparent;
-  border: none;
-  outline: none;
-  padding: 0;
-  margin: 0;
-  font: inherit;
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.35;
-  color: var(--fg);
-  caret-color: var(--accent);
-  letter-spacing: -0.01em;
-  resize: none;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  min-height: 26px;
-  max-height: 180px;
-  -webkit-app-region: no-drag;
-}
-#composer::placeholder {
-  color: var(--fg-muted);
-  font-weight: 500;
-}
-
-/* Subtle pulse on the input while a turn is in flight (#8 / #8b cue) */
-.composer-wrap.streaming #composer {
-  caret-color: rgba(255, 200, 90, 0.9);
-}
-
-/* ============================================================
-   Attachments row (above the textarea)
-   ============================================================ */
-
-.attachments {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 0 6px;
-  -webkit-app-region: no-drag;
-}
-.attachments.hidden { display: none; }
-
-/* (#4) Raw image thumbs — no filename label */
-.thumb {
-  position: relative;
-  width: 56px;
-  height: 56px;
-  border-radius: 8px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-.thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.thumb-x {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 11px;
-  cursor: default;
-  user-select: none;
-}
-.thumb-x:hover { background: rgba(0, 0, 0, 0.8); }
-
-/* Inline reply quote — shown in the composer when user clicked ↩ Reply
-   on a text selection. Sits above the textarea with an X to remove. */
-.reply-quote-chip {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  padding: 8px 28px 8px 12px;
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--fg-muted);
-  max-height: 100px;
-  overflow: hidden;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.4;
-}
-.reply-quote-chip.hidden { display: none; }
-.reply-quote-chip::before {
-  content: "";
-  position: absolute;
-  top: 8px;
-  bottom: 8px;
-  left: 4px;
-  width: 2px;
-  border-radius: 1px;
-  background: rgba(255, 255, 255, 0.18);
-}
-.reply-quote-chip-x {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 18px;
-  height: 18px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--fg-muted);
-  font-size: 11px;
-  cursor: default;
-  user-select: none;
-}
-.reply-quote-chip-x:hover { background: rgba(255, 255, 255, 0.14); color: var(--fg); }
-
-/* (#3) PASTED chip */
-.paste-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px 4px 8px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  font-size: 11px;
-  color: var(--fg);
-  cursor: pointer;
-  height: 24px;
-  align-self: center;
-}
-.paste-chip:hover { background: rgba(255, 255, 255, 0.1); }
-.paste-chip-tag {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 1px 5px;
-  border-radius: 3px;
-}
-.paste-chip-meta { color: var(--fg-muted); font-weight: 500; }
-.paste-chip-x {
-  width: 14px;
-  height: 14px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--fg-muted);
-  font-size: 10px;
-  margin-left: 2px;
-}
-.paste-chip-x:hover { background: rgba(255, 255, 255, 0.18); color: var(--fg); }
-
-/* File-attachment chip — same skeleton as PASTED, with an inline filename. */
-.file-chip { cursor: default; max-width: 280px; }
-.file-chip-name {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 180px;
-}
-.history-files {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 4px 0 0;
-}
-
+.settings-footer button:hover { background: var(--tint-strong); }
 
 /* ============================================================
    Response stream
    ============================================================ */
-
 .response,
 .response * {
   -webkit-app-region: drag;
@@ -417,37 +525,31 @@ html, body {
 }
 
 .response {
-  /* The OUTER response fills remaining window space (flex: 1 1 auto +
-     min-height: 0) so when the composer grows, the response shrinks to
-     accommodate it instead of pushing content off-screen. The window itself
-     grows only when response-inner > the response's allocated space (handled
-     in fitWindow). */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 10px 22px 14px;
+  padding: 12px 22px 16px;
   font-size: 14.5px;
   line-height: 1.55;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--fg);
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  scrollbar-color: var(--tint-strong) transparent;
 }
-.response-inner {
-  /* Natural content size — fitWindow measures THIS rather than .response, so
-     the flex:1 1 auto on .response can't inflate the measurement and trigger
-     a runaway grow. */
-  display: block;
-}
+.response-inner { display: block; }
 .response.empty { display: none; }
 .response::-webkit-scrollbar { width: 6px; }
-.response::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 3px; }
+.response::-webkit-scrollbar-thumb {
+  background: var(--tint-strong);
+  border-radius: 3px;
+}
 .response::-webkit-scrollbar-track { background: transparent; }
 
 .response h1, .response h2, .response h3 {
   font-weight: 700;
   margin: 12px 0 6px;
   letter-spacing: -0.01em;
+  color: var(--fg);
 }
 .response h1 { font-size: 17px; }
 .response h2 { font-size: 15px; }
@@ -462,31 +564,65 @@ html, body {
   border-radius: 4px;
   font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 12.5px;
+  color: rgba(60, 30, 8, 0.95);
 }
 .response pre {
+  position: relative;
   background: var(--code-bg);
+  border: 1px solid var(--hairline);
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow-x: auto;
   margin: 8px 0;
   font-size: 12.5px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  box-shadow: inset 0 1px 0 var(--glass-top);
 }
-.response pre code { background: transparent; padding: 0; }
-.response a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--fg-muted); }
-.response strong { font-weight: 700; }
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-family: var(--font);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--fg);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: default;
+  opacity: 0;
+  transition: opacity 0.14s ease, background 0.14s ease;
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+.response pre:hover .code-copy { opacity: 1; }
+.code-copy:hover { background: rgba(255, 255, 255, 0.85); }
+.code-copy.copied {
+  background: rgba(255, 170, 80, 0.35);
+  color: rgba(70, 35, 8, 0.95);
+  opacity: 1;
+}
+.response pre code { background: transparent; padding: 0; color: var(--fg); }
+.response a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-soft);
+}
+.response strong { font-weight: 700; color: var(--fg); }
 .response hr { border: none; border-top: 1px solid var(--hairline); margin: 10px 0; }
 .response blockquote {
-  border-left: 2px solid var(--hairline);
+  border-left: 2px solid var(--accent-soft);
   padding-left: 10px;
-  color: var(--fg-muted);
+  color: var(--fg-soft);
   margin: 6px 0;
 }
 
 .error {
-  color: rgba(255, 140, 140, 0.9);
+  color: rgba(170, 30, 30, 0.95);
   font-weight: 500;
 }
 .stream-note {
@@ -497,9 +633,6 @@ html, body {
 }
 .stream-note.muted { opacity: 0.65; }
 
-/* Mid-stream user injection — appears inline INSIDE the active turn, like
-   Claude Code's "↳ <new input>" marker. The assistant continues streaming
-   below it without starting a new turn block. */
 .inline-injection {
   position: relative;
   margin: 10px 0 6px;
@@ -509,21 +642,21 @@ html, body {
   color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
-  border-left: 2px solid rgba(255, 200, 90, 0.5);
+  border-left: 2px solid var(--accent-soft);
 }
 .inline-injection::before {
   content: "↳";
   position: absolute;
   left: 2px;
   top: 4px;
-  color: rgba(255, 200, 90, 0.7);
+  color: var(--accent);
   font-size: 13px;
   line-height: 1;
 }
 .inline-injection-imgs,
 .inline-injection-pastes {
   margin-left: 18px;
-  border-left: 2px solid rgba(255, 200, 90, 0.5);
+  border-left: 2px solid var(--accent-soft);
   padding-left: 8px;
 }
 
@@ -538,12 +671,14 @@ html, body {
   z-index: 10;
   padding: 6px 8px 8px;
   border-top: 1px solid var(--hairline);
-  background: rgb(28, 28, 32);
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(255, 170, 80, 0.10), transparent 70%),
+    linear-gradient(180deg, rgba(255, 150, 60, 0.06), rgba(255, 110, 30, 0.04));
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 12px;
+  border-bottom-left-radius: var(--radius);
+  border-bottom-right-radius: var(--radius);
 }
 .commands.hidden { display: none; }
 .cmd {
@@ -551,20 +686,23 @@ html, body {
   align-items: baseline;
   gap: 12px;
   padding: 8px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   cursor: default;
   font-size: 13px;
 }
-.cmd.selected { background: rgba(255, 255, 255, 0.08); }
+.cmd.selected {
+  background: var(--tint-strong);
+  box-shadow: inset 0 0 0 0.5px var(--hairline-strong);
+}
 .cmd-name {
   font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--accent);
   min-width: 80px;
 }
 .cmd-desc {
-  color: var(--fg-muted);
+  color: var(--fg-soft);
   font-weight: 400;
   font-size: 12.5px;
 }
@@ -579,7 +717,7 @@ html, body {
   overflow: hidden;
   flex: 0 0 auto;
 }
-.status-line.active { background: rgba(255, 255, 255, 0.06); }
+.status-line.active { background: rgba(255, 170, 80, 0.10); }
 .status-line.active::after {
   content: "";
   position: absolute;
@@ -587,7 +725,7 @@ html, body {
   left: -35%;
   width: 35%;
   height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
   animation: slide 1.5s ease-in-out infinite;
 }
 @keyframes slide { 0% { left: -35%; } 100% { left: 100%; } }
@@ -597,8 +735,8 @@ html, body {
   align-items: baseline;
   gap: 8px;
   padding: 4px 10px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--tint);
+  border: 1px solid var(--hairline-strong);
   border-radius: 7px;
   font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 12px;
@@ -610,6 +748,7 @@ html, body {
   white-space: nowrap;
   text-overflow: ellipsis;
   transform-origin: left center;
+  box-shadow: inset 0 1px 0 var(--glass-top);
 }
 .tool.tool-enter {
   animation: tool-pop 0.36s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -619,11 +758,11 @@ html, body {
   60% { transform: scale(1.04); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
 }
-.tool-arrow { opacity: 0.5; font-size: 11px; }
-.tool-name { letter-spacing: 0.01em; font-weight: 600; }
-.tool-sep { opacity: 0.35; padding: 0 2px; }
+.tool-arrow { opacity: 0.6; font-size: 11px; color: var(--accent); }
+.tool-name { letter-spacing: 0.01em; font-weight: 600; color: var(--accent); }
+.tool-sep { opacity: 0.4; padding: 0 2px; }
 .tool-label {
-  color: var(--fg-muted);
+  color: var(--fg-soft);
   font-weight: 400;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -631,7 +770,7 @@ html, body {
 }
 
 /* ============================================================
-   Turn / user-query / history attachments (#6)
+   Turn / user-query / history attachments
    ============================================================ */
 .turn { padding: 0; position: relative; }
 .turn.turn-divider {
@@ -644,7 +783,7 @@ html, body {
 .user-query {
   font-size: 12px;
   font-weight: 500;
-  color: var(--fg-muted);
+  color: var(--accent);
   letter-spacing: 0.02em;
   text-transform: uppercase;
   margin: 0 0 8px;
@@ -657,7 +796,6 @@ html, body {
   opacity: 0.6;
 }
 
-/* (#6) inline images sent with the user query */
 .history-images {
   display: flex;
   flex-wrap: wrap;
@@ -667,13 +805,12 @@ html, body {
 .history-img {
   max-width: 200px;
   max-height: 140px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--hairline);
   display: block;
   -webkit-app-region: no-drag;
 }
 
-/* (#6) inline PASTED collapsible blocks */
 .history-pastes {
   display: flex;
   flex-direction: column;
@@ -681,8 +818,8 @@ html, body {
   margin: 0 0 10px;
 }
 .history-paste {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--tint-soft);
+  border: 1px solid var(--hairline);
   border-radius: 6px;
   padding: 4px 8px;
 }
@@ -700,7 +837,8 @@ html, body {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 170, 80, 0.14);
+  color: var(--accent);
   padding: 1px 5px;
   border-radius: 3px;
 }
@@ -717,33 +855,32 @@ html, body {
 }
 
 /* ============================================================
-   Inline reply (#2)
+   Inline reply
    ============================================================ */
 .turn-actions { display: none; }
 
-/* Persistent highlight applied when the user opens a reply/side window —
-   replaces the native browser selection so the highlight stays visible even
-   when the main window loses focus. */
 .quote-highlight {
-  background: rgba(255, 200, 90, 0.28);
+  background: rgba(255, 170, 80, 0.32);
   border-radius: 2px;
-  box-shadow: 0 0 0 1px rgba(255, 200, 90, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 170, 80, 0.22);
 }
 
-/* Floating selection popover — appears above selected text in any turn */
 .sel-popover {
   position: fixed;
   z-index: 200;
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: rgba(20, 20, 24, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+  background: rgba(255, 240, 220, 0.96);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-top),
+    0 8px 24px rgba(60, 30, 0, 0.32);
   -webkit-app-region: no-drag;
   transform: translate(-50%, -100%);
   margin-top: -8px;
+  backdrop-filter: blur(20px) saturate(1.4);
 }
 .sel-popover.hidden { display: none; }
 .sel-popover button {
@@ -754,47 +891,49 @@ html, body {
   border: none;
   color: var(--fg);
   padding: 5px 9px;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: default;
   white-space: nowrap;
 }
-.sel-popover button:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
+.sel-popover button:hover { background: var(--tint-strong); }
 
 /* ============================================================
-   Reply window (separate Tauri WebviewWindow)
+   Reply window
    ============================================================ */
 body.reply-window {
   background: transparent;
   color: var(--fg);
-  /* Outer transparency so the rounded corners on #reply-app actually clip
-     against nothing instead of an opaque rectangle. */
 }
 #reply-app {
+  position: relative;
   width: 100%;
   height: 100vh;
   display: flex;
   flex-direction: column;
-  border-radius: 14px;
+  border-radius: var(--radius);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgb(28, 28, 32);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+  border: none;
+  background:
+    linear-gradient(180deg, rgba(255, 200, 130, 0.18) 0%, rgba(255, 180, 110, 0.14) 100%);
+  box-shadow: none;
   transform-origin: top center;
   animation: reply-appear 0.22s cubic-bezier(0.2, 0.9, 0.4, 1);
 }
+#reply-app::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    linear-gradient(135deg, rgba(255, 240, 215, 0.08) 0%, transparent 35%),
+    linear-gradient(315deg, rgba(255, 130, 50, 0.06) 0%, transparent 40%);
+  z-index: 0;
+}
+#reply-app > * { position: relative; z-index: 1; }
 @keyframes reply-appear {
-  from {
-    opacity: 0;
-    transform: scale(0.92) translateY(-6px);
-    filter: blur(2px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-    filter: blur(0);
-  }
+  from { opacity: 0; transform: translateY(-4px); filter: blur(2px); }
+  to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
 }
 .reply-header {
   flex: 0 0 auto;
@@ -811,9 +950,10 @@ body.reply-window {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 170, 80, 0.16);
+  color: var(--accent);
   padding: 2px 6px;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 .reply-quote {
   flex: 1;
@@ -830,10 +970,10 @@ body.reply-window {
   font-size: 18px;
   width: 24px;
   height: 24px;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: default;
 }
-.reply-close:hover { background: rgba(255, 255, 255, 0.08); color: var(--fg); }
+.reply-close:hover { background: var(--tint); color: var(--fg); }
 
 .reply-body {
   flex: 1 1 auto;
@@ -846,7 +986,7 @@ body.reply-window {
 .reply-user {
   font-size: 11px;
   font-weight: 500;
-  color: var(--fg-muted);
+  color: var(--accent);
   text-transform: uppercase;
   letter-spacing: 0.02em;
   margin-bottom: 6px;
@@ -858,8 +998,9 @@ body.reply-window {
 .reply-resp p { margin: 4px 0; }
 .reply-resp pre {
   background: var(--code-bg);
+  border: 1px solid var(--hairline);
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -871,11 +1012,11 @@ body.reply-window {
   font-family: "SF Mono", Menlo, Consolas, monospace;
   font-size: 12px;
 }
-.reply-resp .error { color: rgba(255, 140, 140, 0.9); }
+.reply-resp .error { color: rgba(170, 30, 30, 0.95); }
 
 #reply-composer {
   flex: 0 0 auto;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--tint-soft);
   border: none;
   border-top: 1px solid var(--hairline);
   outline: none;
@@ -896,32 +1037,32 @@ body.reply-window {
   font-family: var(--font);
   font-size: 11px;
   font-weight: 500;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--tint);
+  border: 1px solid var(--hairline-strong);
   color: var(--fg);
   padding: 3px 9px;
   border-radius: 6px;
   cursor: default;
 }
-.reply-btn:hover { background: rgba(255, 255, 255, 0.12); }
+.reply-btn:hover { background: var(--tint-strong); }
 
 .reply-composer {
   margin-top: 8px;
   padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--tint-soft);
+  border: 1px solid var(--hairline);
   border-radius: 10px;
 }
 .reply-composer.reply-side {
-  background: linear-gradient(180deg, rgba(120, 200, 255, 0.06), rgba(120, 200, 255, 0.02));
-  border-color: rgba(120, 200, 255, 0.18);
+  background: linear-gradient(180deg, rgba(255, 170, 80, 0.12), rgba(255, 130, 50, 0.05));
+  border-color: rgba(255, 170, 80, 0.28);
 }
 .reply-head {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: var(--accent);
   margin-bottom: 4px;
 }
 .reply-input {
@@ -950,20 +1091,27 @@ body.reply-window {
   font-weight: 500;
   padding: 4px 10px;
   border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--hairline-strong);
+  background: var(--tint);
   color: var(--fg);
   cursor: default;
 }
-.reply-actions .reply-send { background: rgba(255, 255, 255, 0.18); }
-.reply-actions button:hover { background: rgba(255, 255, 255, 0.16); }
+.reply-actions .reply-send {
+  background: linear-gradient(180deg, rgba(255, 170, 80, 0.35), rgba(255, 130, 50, 0.25));
+  border-color: rgba(255, 170, 80, 0.45);
+  color: rgba(40, 18, 0, 0.95);
+  font-weight: 600;
+}
+.reply-actions button:hover { background: var(--tint-strong); }
+.reply-actions .reply-send:hover {
+  background: linear-gradient(180deg, rgba(255, 180, 100, 0.45), rgba(255, 140, 60, 0.35));
+}
 
-/* Side-chat bubble — anchored under its parent turn, visually offset */
 .turn.turn-side {
   margin: 10px 0 4px 24px;
   padding: 10px 12px;
-  background: linear-gradient(180deg, rgba(120, 200, 255, 0.05), rgba(120, 200, 255, 0.02));
-  border: 1px solid rgba(120, 200, 255, 0.16);
+  background: linear-gradient(180deg, rgba(255, 170, 80, 0.08), rgba(255, 130, 50, 0.04));
+  border: 1px solid rgba(255, 170, 80, 0.22);
   border-radius: 12px;
   border-top: none;
 }
@@ -972,14 +1120,14 @@ body.reply-window {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: rgba(120, 200, 255, 0.85);
+  color: var(--accent);
   text-transform: uppercase;
   display: block;
   margin-bottom: 4px;
 }
 
 /* ============================================================
-   Anthropic-style typing dots
+   Typing dots
    ============================================================ */
 .typing {
   display: inline-flex;
@@ -991,15 +1139,15 @@ body.reply-window {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--fg);
-  opacity: 0.35;
+  background: var(--accent);
+  opacity: 0.4;
   animation: pulse 1.2s ease-in-out infinite;
 }
 .typing span:nth-child(2) { animation-delay: 0.18s; }
 .typing span:nth-child(3) { animation-delay: 0.36s; }
 @keyframes pulse {
-  0%, 80%, 100% { opacity: 0.25; transform: scale(0.85); }
-  40% { opacity: 0.95; transform: scale(1.1); }
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
+  40% { opacity: 1; transform: scale(1.1); }
 }
 
 /* ============================================================
@@ -1011,18 +1159,22 @@ body.reply-window {
   right: 18px;
   font-size: 12px;
   color: var(--fg);
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(255, 240, 220, 0.96);
+  border: 1px solid var(--hairline-strong);
   padding: 6px 12px;
   border-radius: 8px;
   opacity: 0;
   transition: opacity 0.18s ease;
   pointer-events: none;
   z-index: 50;
+  backdrop-filter: blur(20px);
+  box-shadow:
+    inset 0 1px 0 var(--glass-top),
+    0 4px 12px rgba(60, 30, 0, 0.20);
 }
 .toast.show { opacity: 1; }
 
 .paste-overlay {
-  /* No dark backdrop — the card alone, centered. Click outside still closes. */
   position: fixed;
   inset: 0;
   background: transparent;
@@ -1034,12 +1186,18 @@ body.reply-window {
 .paste-overlay-card {
   width: min(560px, 92vw);
   max-height: 80vh;
-  background: rgb(28, 28, 32);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
+  background:
+    radial-gradient(120% 80% at 50% -10%, rgba(255, 200, 140, 0.45), transparent 65%),
+    rgba(255, 240, 220, 0.96);
+  border: 1px solid var(--glass-edge);
+  border-radius: 14px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  backdrop-filter: blur(28px) saturate(1.4);
+  box-shadow:
+    inset 0 1px 0 var(--glass-top),
+    0 24px 60px rgba(60, 30, 0, 0.45);
 }
 .paste-overlay-head {
   display: flex;
@@ -1058,14 +1216,14 @@ body.reply-window {
   color: var(--fg-muted);
   font-size: 16px;
   line-height: 1;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: default;
   padding: 0;
 }
-.paste-overlay-close:hover { background: rgba(255, 255, 255, 0.08); color: var(--fg); }
+.paste-overlay-close:hover { background: var(--tint); color: var(--fg); }
 .paste-overlay-text {
   flex: 1;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 200, 140, 0.03);
   border: none;
   outline: none;
   resize: none;
@@ -1087,16 +1245,18 @@ body.reply-window {
 .paste-overlay-save {
   font: inherit;
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.16);
-  color: var(--fg);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(255, 170, 80, 0.35), rgba(255, 130, 50, 0.25));
+  color: rgba(40, 18, 0, 0.95);
+  border: 1px solid rgba(255, 170, 80, 0.45);
+  border-radius: 7px;
   padding: 5px 14px;
+  font-weight: 600;
   cursor: default;
 }
-.paste-overlay-save:hover { background: rgba(255, 255, 255, 0.22); }
+.paste-overlay-save:hover {
+  background: linear-gradient(180deg, rgba(255, 180, 100, 0.45), rgba(255, 140, 60, 0.35));
+}
 
-/* Session picker */
 .session-picker .session-list {
   overflow-y: auto;
   max-height: 60vh;
@@ -1107,7 +1267,7 @@ body.reply-window {
   border-radius: 8px;
   cursor: default;
 }
-.session-row:hover { background: rgba(255, 255, 255, 0.06); }
+.session-row:hover { background: var(--tint); }
 .session-preview {
   font-size: 13px;
   color: var(--fg);

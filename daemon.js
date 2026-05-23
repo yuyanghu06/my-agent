@@ -49,10 +49,11 @@ try {
 
 try { fs.unlinkSync(SOCKET_PATH); } catch {}
 
-// Per-socket state: most recently observed claude session_id for this
-// connection. Used by the interrupt path so the re-spawn reattaches to
-// THIS connection's session via --resume <uuid>, not whichever session
-// touched disk most recently (which `--continue` would pick).
+// Per-socket "current session UUID" — captured from claude's system event
+// on every spawn, then fed back as --resume <uuid> on the next turn. This
+// is the canonical multi-turn mechanism: each socket gets its own session,
+// the daemon never uses --continue (which picks "most recently touched on
+// disk" and races against concurrent sockets like side-chat windows).
 const socketSession = new WeakMap();
 
 const server = net.createServer((socket) => {
@@ -104,19 +105,14 @@ const server = net.createServer((socket) => {
         socket.write(JSON.stringify({ error: 'Missing query field' }) + '\n');
         continue;
       }
-      // interrupt: cancel current and immediately start the new query
+      // interrupt: cancel current and immediately start the new query.
+      // runQuery picks up this socket's saved session UUID automatically,
+      // so the re-spawn naturally --resumes the same conversation.
       if (msg.interrupt === true && activeQuery && activeQuery.socket === socket) {
         log('interrupt requested — swapping query');
         try { activeQuery.child.kill('SIGTERM'); } catch {}
         clearTimeout(activeQuery.timer);
         activeQuery = null;
-        // Pin the re-spawn to THIS connection's session so a concurrent
-        // side-chat or other socket doesn't steal `--continue`.
-        const pinned = socketSession.get(socket);
-        if (pinned) {
-          resumeSessionId = pinned;
-          log(`interrupt will --resume ${pinned}`);
-        }
         // brief delay so the SIGTERM is processed before respawning
         setTimeout(() => runQuery(socket, msg.query), 80);
         continue;
@@ -165,6 +161,22 @@ function runQuery(socket, query) {
     log('starting fresh session — explicit fresh request from client');
   }
 
+  // Pick the session UUID to resume:
+  //   1. fresh requested  → no flag, claude generates a new uuid; socketSession
+  //      cleared now and rewritten when the system event arrives.
+  //   2. client sent {resume:<uuid>}  → one-shot override (e.g. /sessions load).
+  //   3. socket already has a captured uuid from a prior turn  → resume it.
+  //   4. first-ever turn on this socket  → no flag, capture the new uuid.
+  let sessionToResume = null;
+  if (startFresh) {
+    socketSession.delete(socket);
+  } else if (resumeSessionId) {
+    sessionToResume = resumeSessionId;
+    resumeSessionId = null; // one-shot
+  } else {
+    sessionToResume = socketSession.get(socket) || null;
+  }
+
   const args = [
     '--print',
     '--dangerously-skip-permissions',
@@ -172,12 +184,11 @@ function runQuery(socket, query) {
     '--include-partial-messages',
     '--verbose',
   ];
-  if (resumeSessionId && !startFresh) {
-    args.push('--resume', resumeSessionId);
-    log(`resuming claude session ${resumeSessionId}`);
-    resumeSessionId = null; // one-shot
-  } else if (!startFresh) {
-    args.push('--continue');
+  if (sessionToResume) {
+    args.push('--resume', sessionToResume);
+    log(`resuming claude session ${sessionToResume}`);
+  } else {
+    log('starting fresh claude session (no saved uuid)');
   }
   args.push(query);
 

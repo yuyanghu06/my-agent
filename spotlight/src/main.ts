@@ -6,7 +6,7 @@ import MarkdownIt from "markdown-it";
 import mdKatex from "@vscode/markdown-it-katex";
 import "katex/dist/katex.min.css";
 
-const MIN_HEIGHT = 48;
+const MIN_HEIGHT = 52;
 const MAX_HEIGHT = 720;
 const PASTE_CHIP_THRESHOLD = 280;
 const COMPOSER_MAX_PX = 180; // textarea cap before it scrolls internally
@@ -183,7 +183,13 @@ function hideSettingsPanel() {
   if (!settingsPanel) return;
   settingsPanel.classList.add("hidden");
   response.classList.remove("hidden");
-  fitWindow();
+  // If there's no chat content, snap back to the bar height. fitWindow only
+  // grows — without snapToMin the window stays at the panel's tall size.
+  if (response.classList.contains("empty")) {
+    snapToMin();
+  } else {
+    fitWindow();
+  }
 }
 
 function renderHotkeyInputs() {
@@ -250,7 +256,15 @@ settingsPanel?.addEventListener("focusout", (e) => {
 
 settingsPanel?.addEventListener("keydown", (e) => {
   const target = e.target as HTMLElement;
-  if (!target.classList.contains("hotkey-input")) return;
+  if (!target.classList.contains("hotkey-input")) {
+    // Esc anywhere else in the panel closes it.
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      hideSettingsPanel();
+    }
+    return;
+  }
   e.preventDefault();
   e.stopPropagation();
   const row = target.closest<HTMLDivElement>(".settings-row");
@@ -495,6 +509,13 @@ function setActive(running: boolean) {
   composerWrap.classList.toggle("streaming", running);
 }
 
+// Daemon reachability indicator. Set to true on socket failure; cleared on the
+// next successful stream chunk or completion. The .bar-icon picks up an error
+// color via CSS while this is set.
+function setDaemonDown(down: boolean) {
+  document.body.classList.toggle("daemon-down", down);
+}
+
 function setResponseEmpty(empty: boolean) {
   response.classList.toggle("empty", empty);
   bar.classList.toggle("has-response", !empty);
@@ -625,6 +646,7 @@ function appendChunk(turn: Turn, text: string) {
     const merged = (prev || "") + text;
     (last as any)._content = merged;
     last.innerHTML = md.render(merged);
+    enhanceCodeBlocks(last);
   } else {
     const el = document.createElement("div");
     el.className = "text-seg";
@@ -632,6 +654,40 @@ function appendChunk(turn: Turn, text: string) {
     el.innerHTML = md.render(text);
     turn.contentEl.appendChild(el);
     turn.segments.push(el);
+    enhanceCodeBlocks(el);
+  }
+}
+
+// Add a copy button to every <pre> code block inside the given container.
+// Idempotent — safe to call after each re-render since chunks keep coming
+// during streaming. Skip blocks already enhanced.
+function enhanceCodeBlocks(root: HTMLElement) {
+  const pres = root.querySelectorAll<HTMLPreElement>("pre");
+  for (const pre of Array.from(pres)) {
+    if (pre.querySelector(".code-copy")) continue;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "code-copy";
+    btn.title = "Copy";
+    btn.textContent = "Copy";
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const codeEl = pre.querySelector("code");
+      const text = (codeEl?.textContent ?? pre.textContent ?? "").replace(/\s+$/, "");
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = "Copied";
+        btn.classList.add("copied");
+        setTimeout(() => {
+          btn.textContent = "Copy";
+          btn.classList.remove("copied");
+        }, 1200);
+      } catch (err) {
+        showToast("Copy failed: " + err);
+      }
+    });
+    pre.appendChild(btn);
   }
 }
 
@@ -843,14 +899,32 @@ async function snapToMin() {
   } catch {}
 }
 
+// Single shared animation handle — animateHeight and animateHeightFast used
+// to maintain separate state and could run concurrently, fighting over cachedH.
+// One handle means a new animation always cancels and replaces the prior one.
 let activeAnim: number | null = null;
-let activeFastAnim: number | null = null;
+let suppressResizeTimer: number | null = null;
+
+function clearSuppressTimer() {
+  if (suppressResizeTimer !== null) {
+    window.clearTimeout(suppressResizeTimer);
+    suppressResizeTimer = null;
+  }
+}
+
+function cancelHeightAnim() {
+  if (activeAnim !== null) {
+    cancelAnimationFrame(activeAnim);
+    activeAnim = null;
+  }
+}
 
 // Fast animated grow used by fitWindow during streaming. Targets resize_height
 // (the cocoa setFrame:display:animate:NO path) on each frame so the animation
 // is JS-controlled and AppKit doesn't try to layer its own ease on top.
 function animateHeightFast(fromH: number, toH: number, duration = 90) {
-  if (activeFastAnim !== null) cancelAnimationFrame(activeFastAnim);
+  cancelHeightAnim();
+  clearSuppressTimer();
   const start = performance.now();
   suppressResizeWatcher = true;
   const step = (now: number) => {
@@ -860,21 +934,25 @@ function animateHeightFast(fromH: number, toH: number, duration = 90) {
     cachedH = h;
     invoke("resize_height", { height: h }).catch(() => {});
     if (t < 1) {
-      activeFastAnim = requestAnimationFrame(step);
+      activeAnim = requestAnimationFrame(step);
     } else {
-      activeFastAnim = null;
+      activeAnim = null;
       cachedH = toH;
-      setTimeout(() => { suppressResizeWatcher = false; }, 30);
+      suppressResizeTimer = window.setTimeout(() => {
+        suppressResizeWatcher = false;
+        suppressResizeTimer = null;
+      }, 30);
     }
   };
-  activeFastAnim = requestAnimationFrame(step);
+  activeAnim = requestAnimationFrame(step);
 }
 
 function animateHeight(width: number, fromH: number, toH: number, duration = 40) {
   // Always keep cachedH consistent with the actual window — fitWindow uses
   // it as the truth source for "do we have room."
   void width;
-  if (activeAnim !== null) cancelAnimationFrame(activeAnim);
+  cancelHeightAnim();
+  clearSuppressTimer();
   const start = performance.now();
   suppressResizeWatcher = true;
   const step = (now: number) => {
@@ -888,7 +966,10 @@ function animateHeight(width: number, fromH: number, toH: number, duration = 40)
     } else {
       activeAnim = null;
       cachedH = toH;
-      setTimeout(() => { suppressResizeWatcher = false; }, 50);
+      suppressResizeTimer = window.setTimeout(() => {
+        suppressResizeWatcher = false;
+        suppressResizeTimer = null;
+      }, 50);
     }
   };
   activeAnim = requestAnimationFrame(step);
@@ -1041,20 +1122,36 @@ function expandPasteChip(idx: number) {
       </div>
       <textarea class="paste-overlay-text" spellcheck="false"></textarea>
       <div class="paste-overlay-foot">
-        <button class="paste-overlay-save">Save</button>
+        <button class="paste-overlay-save">Save (⌘↵)</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
   const ta = overlay.querySelector(".paste-overlay-text") as HTMLTextAreaElement;
   ta.value = p.content;
   ta.focus();
-  const close = () => overlay.remove();
-  overlay.querySelector(".paste-overlay-close")!.addEventListener("click", close);
-  overlay.querySelector(".paste-overlay-save")!.addEventListener("click", () => {
+  const save = () => {
     p.content = ta.value;
     renderAttachments();
     close();
-  });
+  };
+  const close = () => {
+    document.removeEventListener("keydown", onKey, true);
+    overlay.remove();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      save();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  overlay.querySelector(".paste-overlay-close")!.addEventListener("click", close);
+  overlay.querySelector(".paste-overlay-save")!.addEventListener("click", save);
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
@@ -1101,10 +1198,66 @@ document.addEventListener("drop", async (e) => {
 // Composer auto-grow (#5)
 // ============================================================
 
+// Hidden span used to measure the natural width of whatever's currently
+// in (or about to render in) the textarea. Sized once with the composer's
+// computed font so measurements match what the textarea would render.
+let composerMeasure: HTMLSpanElement | null = null;
+function getMeasure(): HTMLSpanElement {
+  if (composerMeasure) return composerMeasure;
+  const el = document.createElement("span");
+  el.style.position = "absolute";
+  el.style.visibility = "hidden";
+  el.style.whiteSpace = "pre";
+  el.style.pointerEvents = "none";
+  el.style.top = "-9999px";
+  el.style.left = "0";
+  const cs = getComputedStyle(composer);
+  el.style.font = cs.font;
+  el.style.letterSpacing = cs.letterSpacing;
+  document.body.appendChild(el);
+  composerMeasure = el;
+  return el;
+}
+
+// Stable floor for composer width — at least as wide as the placeholder
+// so the field doesn't visibly shrink the moment the user types the first
+// character (which switches measurement from placeholder text to content
+// text, producing a jarring jump otherwise).
+let composerMinWidth = 140;
+function recomputeComposerMin() {
+  const measure = getMeasure();
+  measure.textContent = composer.placeholder || "Ask Claude…";
+  composerMinWidth = Math.max(140, measure.offsetWidth + 28);
+}
+
+function sizeComposerWidth() {
+  const measure = getMeasure();
+  // Measure ONLY the actual content. Placeholder width is baked into
+  // composerMinWidth above so an empty field never reports narrower than
+  // the "Ask Claude…" hint, and a single-char input never shrinks below it.
+  const text = composer.value;
+  let widest = 0;
+  for (const line of text.split("\n")) {
+    measure.textContent = line || " ";
+    if (measure.offsetWidth > widest) widest = measure.offsetWidth;
+  }
+  // Buffer 28px: enough lead time that the next keystroke doesn't wrap
+  // before sizeComposerWidth runs (input event fires after the char lands).
+  // Smaller buffers produced the visible jitter on each keystroke.
+  const target = Math.max(composerMinWidth, widest + 28);
+  const wrap = composerWrap.getBoundingClientRect().width;
+  composer.style.width =
+    Math.min(target, Math.max(composerMinWidth, wrap - 8)) + "px";
+}
+
 function autosizeComposer() {
   composer.style.height = "auto";
   const h = Math.min(COMPOSER_MAX_PX, composer.scrollHeight);
   composer.style.height = h + "px";
+  // Width tracks content too — narrow textarea = drag area everywhere else.
+  sizeComposerWidth();
+  // Toggle has-content so CSS can show the caret only when typing.
+  composer.classList.toggle("has-content", composer.value.length > 0);
   // Intentionally NOT calling fitWindow — composer growth should expand
   // INSIDE the existing window (eating from the response area), not push the
   // window taller. fitWindow will still grow the window if the resulting
@@ -1314,6 +1467,7 @@ async function runQuery(turn: Turn, payload: string) {
     // Route to whichever turn is currently active (handles interrupt swap).
     const target = activeTurn ?? turn;
     if (msg.kind === "chunk") {
+      setDaemonDown(false);
       appendChunk(target, msg.text);
       maybeFollow();
     } else if (msg.kind === "sessionid") {
@@ -1345,6 +1499,9 @@ async function runQuery(turn: Turn, payload: string) {
       err.className = "error";
       err.textContent = msg.message;
       target.contentEl.appendChild(err);
+      if (/cannot reach daemon|connect|broken pipe|connection refused/i.test(msg.message)) {
+        setDaemonDown(true);
+      }
       activeTurn = null;
       setActive(false);
     }
@@ -1354,7 +1511,11 @@ async function runQuery(turn: Turn, payload: string) {
     await invoke("send_query", { query: payload, onEvent: channel });
   } catch (e) {
     removeTyping(turn);
-    showError(String(e));
+    const msg = String(e);
+    showError(msg);
+    if (/cannot reach daemon|connect|broken pipe|connection refused/i.test(msg)) {
+      setDaemonDown(true);
+    }
     activeTurn = null;
     setActive(false);
   }
@@ -1751,10 +1912,25 @@ commandsEl.addEventListener("click", async (e) => {
   }
 });
 
+// Click outside the palette dismisses it. (Esc and selecting-an-item are
+// already handled by the composer/keydown handler.)
+document.addEventListener("mousedown", (e) => {
+  if (!paletteOpen) return;
+  const t = e.target as HTMLElement;
+  if (t.closest(".commands") || t.closest("#composer")) return;
+  hidePalette();
+});
+
 win.onFocusChanged(({ payload: focused }) => {
-  if (focused) {
-    composer.focus();
-  }
+  if (!focused) return;
+  // Don't steal focus from interactive surfaces — settings inputs, paste
+  // overlay textarea, session picker, or an inline reply composer.
+  const active = document.activeElement as HTMLElement | null;
+  if (active && active !== document.body && active.tagName === "TEXTAREA") return;
+  if (active && active.tagName === "INPUT") return;
+  if (document.querySelector(".paste-overlay")) return;
+  if (settingsPanel && !settingsPanel.classList.contains("hidden")) return;
+  composer.focus();
 });
 
 document.addEventListener("mousedown", (e) => {
@@ -1790,6 +1966,15 @@ const ro = new ResizeObserver(() => {
 });
 ro.observe(response);
 
+// Clear any value WebKit may have restored from a prior page load (Vite HMR
+// can persist textarea state across reloads).
+composer.value = "";
+composer.classList.remove("has-content");
+// Force-hide chips that should start invisible — defensive against any path
+// (HMR, restored state) that may have stripped the `hidden` class.
+replyChipEl?.classList.add("hidden");
+attachmentsEl?.classList.add("hidden");
+recomputeComposerMin();
 composer.focus();
 setResponseEmpty(true);
 autosizeComposer();
@@ -1914,7 +2099,14 @@ function saveSession() {
     if (turns.length === 0) return;
     const id = localStorage.getItem(CURRENT_SESSION_KEY) || `s${Date.now()}`;
     localStorage.setItem(CURRENT_SESSION_KEY, id);
-    const preview = (turns[0]?.query || "").slice(0, 60);
+    // Use the most recent meaningful query as preview — easier to identify a
+    // session by where it ended up than where it started. Walk backwards
+    // through main-thread turns (skip side bubbles) for the first non-empty
+    // query, fall back to the first turn if none found.
+    const recent = [...turns]
+      .reverse()
+      .find((t) => !t.side && t.query.trim().length > 0);
+    const preview = ((recent ?? turns[0])?.query || "").slice(0, 80);
     const snapshot: SavedSession = {
       id,
       savedAt: Date.now(),
@@ -1937,8 +2129,7 @@ function saveSession() {
 
 function restoreSession(s: SavedSession) {
   clearAll();
-  if (activeAnim !== null) { cancelAnimationFrame(activeAnim); activeAnim = null; }
-  if (activeFastAnim !== null) { cancelAnimationFrame(activeFastAnim); activeFastAnim = null; }
+  cancelHeightAnim();
   localStorage.setItem(CURRENT_SESSION_KEY, s.id);
 
   // Reattach claude's actual conversation state. Two paths:
@@ -1980,6 +2171,7 @@ function restoreSession(s: SavedSession) {
       turn.contentEl.appendChild(el);
       turn.fullText = t.fullText;
       turn.segments.push(el);
+      enhanceCodeBlocks(el);
     }
     finalizeTurn(turn);
   }
@@ -1997,8 +2189,7 @@ async function openSessionPicker() {
   // Grow the window so the picker card has room. snapToMin (from hidePalette)
   // may still be animating down — cancel any in-flight resize animation so
   // ours wins, then jump straight to the picker height.
-  if (activeAnim !== null) { cancelAnimationFrame(activeAnim); activeAnim = null; }
-  if (activeFastAnim !== null) { cancelAnimationFrame(activeFastAnim); activeFastAnim = null; }
+  cancelHeightAnim();
   const wantedH = 480;
   suppressResizeWatcher = true;
   cachedH = wantedH;
@@ -2025,7 +2216,18 @@ async function openSessionPicker() {
     )
     .join("");
   document.body.appendChild(overlay);
-  const close = () => overlay.remove();
+  const close = () => {
+    document.removeEventListener("keydown", onKey, true);
+    overlay.remove();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
   overlay.querySelector(".paste-overlay-close")!.addEventListener("click", close);
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
