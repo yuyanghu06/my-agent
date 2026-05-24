@@ -285,6 +285,18 @@ async fn open_reply_window(
             Some(NSVisualEffectState::Active),
             Some(14.0),
         );
+
+        if let Ok(ns_window) = w.ns_window() {
+            use cocoa::base::{id, nil};
+            use cocoa::foundation::NSString;
+            use objc::{class, msg_send, sel, sel_impl};
+            let ns_window = ns_window as id;
+            unsafe {
+                let name = NSString::alloc(nil).init_str("NSAppearanceNameAqua");
+                let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: name];
+                let _: () = msg_send![ns_window, setAppearance: appearance];
+            }
+        }
     }
     Ok(())
 }
@@ -645,6 +657,18 @@ fn main() {
                     Some(NSVisualEffectState::Active),
                     Some(16.0),
                 );
+
+                if let Ok(ns_window) = window.ns_window() {
+                    use cocoa::base::{id, nil};
+                    use cocoa::foundation::NSString;
+                    use objc::{class, msg_send, sel, sel_impl};
+                    let ns_window = ns_window as id;
+                    unsafe {
+                        let name = NSString::alloc(nil).init_str("NSAppearanceNameAqua");
+                        let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: name];
+                        let _: () = msg_send![ns_window, setAppearance: appearance];
+                    }
+                }
 
                 // Disable AppKit's implicit window-resize animation so setSize
                 // takes effect on the next frame instead of easing over ~200ms.
