@@ -175,8 +175,11 @@ function showSettingsPanel() {
   settingsPanel.classList.remove("hidden");
   response.classList.add("hidden");
   renderHotkeyInputs();
+  // Repaint host/client sections — they may have been written at startup
+  // before their DOM was queryable, or another device may have changed them.
+  try { paintHostUI(); paintClientUI(); void loadNetworkInfo(); } catch {}
   // Grow the window enough to show the panel comfortably.
-  const target = Math.min(MAX_HEIGHT, Math.max(360, bar.offsetHeight + 320));
+  const target = Math.min(MAX_HEIGHT, Math.max(440, bar.offsetHeight + 420));
   invoke("resize_height", { height: target }).catch(() => {});
 }
 function hideSettingsPanel() {
@@ -327,12 +330,328 @@ async function loadSettingsAtStartup() {
     for (const n of HOTKEY_NAMES) {
       if (typeof h[n] === "string") hotkeys[n] = h[n];
     }
+    if (parsed?.host && typeof parsed.host === "object") {
+      hostConfig = { ...hostConfig, ...parsed.host };
+    }
+    if (parsed?.client && typeof parsed.client === "object") {
+      clientConfig = { ...clientConfig, ...parsed.client };
+    }
   } catch (err) {
     console.warn("read_settings failed", err);
   }
   await registerAllHotkeys();
+  await applyHostConfig({ silent: true });
+  await applyClientConfig({ silent: true });
 }
 void loadSettingsAtStartup();
+
+// ============================================================
+// Host + Client (Tailscale-reachable) settings
+// ============================================================
+
+type HostConfig = { enabled: boolean; port: number; token: string };
+type ClientConfig = { enabled: boolean; host: string; port: number; token: string };
+
+let hostConfig: HostConfig = { enabled: false, port: 47330, token: "" };
+let clientConfig: ClientConfig = { enabled: false, host: "", port: 47330, token: "" };
+
+const hostToggle = document.getElementById("host-toggle") as HTMLInputElement | null;
+const hostPortEl = document.getElementById("host-port") as HTMLInputElement | null;
+const hostTokenEl = document.getElementById("host-token") as HTMLInputElement | null;
+const hostTokenRegen = document.getElementById("host-token-regen") as HTMLButtonElement | null;
+const hostTokenCopy = document.getElementById("host-token-copy") as HTMLButtonElement | null;
+const hostShareRow = document.getElementById("host-share-row") as HTMLDivElement | null;
+const hostShareUrl = document.getElementById("host-share-url") as HTMLInputElement | null;
+const hostShareCopy = document.getElementById("host-share-copy") as HTMLButtonElement | null;
+const hostStatusEl = document.getElementById("host-status") as HTMLDivElement | null;
+
+const clientToggle = document.getElementById("client-toggle") as HTMLInputElement | null;
+const clientHostEl = document.getElementById("client-host") as HTMLInputElement | null;
+const clientPortEl = document.getElementById("client-port") as HTMLInputElement | null;
+const clientTokenEl = document.getElementById("client-token") as HTMLInputElement | null;
+const clientTokenPaste = document.getElementById("client-token-paste") as HTMLButtonElement | null;
+const clientStatusEl = document.getElementById("client-status") as HTMLDivElement | null;
+
+let tailscaleInfo: { hostname: string; tailscaleIp?: string; tailscaleHost?: string } | null = null;
+
+function paintHostUI() {
+  if (!hostToggle) return;
+  hostToggle.checked = hostConfig.enabled;
+  if (hostPortEl) hostPortEl.value = String(hostConfig.port);
+  if (hostTokenEl) hostTokenEl.value = hostConfig.token;
+  updateHostStatus();
+  updateShareUrl();
+  const label = hostToggle.parentElement?.querySelector(".net-toggle-label");
+  if (label) label.textContent = hostConfig.enabled ? "On" : "Off";
+}
+
+function paintClientUI() {
+  if (!clientToggle) return;
+  clientToggle.checked = clientConfig.enabled;
+  if (clientHostEl) clientHostEl.value = clientConfig.host;
+  if (clientPortEl) clientPortEl.value = String(clientConfig.port);
+  if (clientTokenEl) clientTokenEl.value = clientConfig.token;
+  updateClientStatus();
+  const label = clientToggle.parentElement?.querySelector(".net-toggle-label");
+  if (label) label.textContent = clientConfig.enabled ? "On" : "Off";
+}
+
+function updateHostStatus() {
+  if (!hostStatusEl) return;
+  if (!hostConfig.enabled) {
+    hostStatusEl.textContent = "Stopped";
+    hostStatusEl.classList.remove("ok", "warn");
+    return;
+  }
+  const addr = preferredHostAddress();
+  hostStatusEl.textContent = addr
+    ? `Listening on ${addr}:${hostConfig.port}`
+    : `Listening on 0.0.0.0:${hostConfig.port}`;
+  hostStatusEl.classList.add("ok");
+  hostStatusEl.classList.remove("warn");
+}
+
+function updateClientStatus() {
+  if (!clientStatusEl) return;
+  if (!clientConfig.enabled) {
+    clientStatusEl.textContent = "Local daemon";
+    clientStatusEl.classList.remove("ok", "warn");
+    return;
+  }
+  clientStatusEl.textContent = `Routing to ${clientConfig.host}:${clientConfig.port}`;
+  clientStatusEl.classList.add("ok");
+}
+
+function preferredHostAddress(): string {
+  return (
+    tailscaleInfo?.tailscaleHost ||
+    tailscaleInfo?.tailscaleIp ||
+    tailscaleInfo?.hostname ||
+    ""
+  );
+}
+
+function updateShareUrl() {
+  if (!hostShareRow || !hostShareUrl) return;
+  const addr = preferredHostAddress();
+  if (!hostConfig.enabled || !addr || !hostConfig.token) {
+    hostShareRow.classList.add("hidden");
+    return;
+  }
+  hostShareRow.classList.remove("hidden");
+  hostShareUrl.value = `spotlight://${addr}:${hostConfig.port}?token=${encodeURIComponent(hostConfig.token)}`;
+}
+
+async function persistNetSettings() {
+  try {
+    const raw = await invoke<string>("read_settings");
+    const parsed = JSON.parse(raw || "{}");
+    parsed.host = hostConfig;
+    parsed.client = clientConfig;
+    parsed.hotkeys = parsed.hotkeys ?? hotkeys;
+    await invoke("write_settings", { json: JSON.stringify(parsed, null, 2) });
+  } catch (err) {
+    console.error("persistNetSettings failed", err);
+  }
+}
+
+async function ensureHostToken(): Promise<string> {
+  if (hostConfig.token) return hostConfig.token;
+  try {
+    const t = await invoke<string>("generate_token");
+    hostConfig.token = t;
+    return t;
+  } catch (err) {
+    console.error("generate_token failed", err);
+    return "";
+  }
+}
+
+async function applyHostConfig(opts: { silent?: boolean } = {}) {
+  if (hostConfig.enabled) {
+    await ensureHostToken();
+  }
+  try {
+    const status = await invoke<{ running: boolean; port: number }>("set_host_mode", {
+      enabled: hostConfig.enabled,
+      port: hostConfig.port,
+      token: hostConfig.token,
+    });
+    if (!opts.silent) {
+      showToast(status.running ? `Host on :${status.port}` : "Host stopped");
+    }
+  } catch (err) {
+    console.error("set_host_mode failed", err);
+    if (!opts.silent) showToast("Host error: " + err);
+    hostConfig.enabled = false;
+  }
+  paintHostUI();
+}
+
+async function applyClientConfig(opts: { silent?: boolean } = {}) {
+  try {
+    await invoke("set_client_mode", {
+      enabled: clientConfig.enabled,
+      host: clientConfig.host,
+      port: clientConfig.port,
+      token: clientConfig.token,
+    });
+    if (!opts.silent) {
+      showToast(
+        clientConfig.enabled
+          ? `Client → ${clientConfig.host}:${clientConfig.port}`
+          : "Client off",
+      );
+    }
+  } catch (err) {
+    console.error("set_client_mode failed", err);
+    if (!opts.silent) showToast("Client error: " + err);
+    clientConfig.enabled = false;
+  }
+  paintClientUI();
+}
+
+async function loadNetworkInfo() {
+  try {
+    tailscaleInfo = await invoke("network_info");
+  } catch (err) {
+    console.warn("network_info failed", err);
+  }
+  updateHostStatus();
+  updateShareUrl();
+}
+void loadNetworkInfo();
+
+// --- Host UI events
+hostToggle?.addEventListener("change", async () => {
+  hostConfig.enabled = !!hostToggle.checked;
+  if (hostConfig.enabled) await ensureHostToken();
+  await persistNetSettings();
+  await applyHostConfig();
+});
+hostPortEl?.addEventListener("change", async () => {
+  const n = Number(hostPortEl.value);
+  if (!Number.isFinite(n) || n < 1024 || n > 65535) {
+    showToast("Port must be 1024–65535");
+    hostPortEl.value = String(hostConfig.port);
+    return;
+  }
+  hostConfig.port = Math.round(n);
+  await persistNetSettings();
+  if (hostConfig.enabled) await applyHostConfig();
+  else paintHostUI();
+});
+hostTokenEl?.addEventListener("change", async () => {
+  hostConfig.token = hostTokenEl.value.trim();
+  await persistNetSettings();
+  if (hostConfig.enabled) await applyHostConfig();
+  else paintHostUI();
+});
+hostTokenRegen?.addEventListener("click", async () => {
+  hostConfig.token = "";
+  await ensureHostToken();
+  await persistNetSettings();
+  if (hostConfig.enabled) await applyHostConfig();
+  else paintHostUI();
+  showToast("New token generated");
+});
+hostTokenCopy?.addEventListener("click", async () => {
+  if (!hostConfig.token) {
+    showToast("No token yet");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(hostConfig.token);
+    showToast("Token copied");
+  } catch {
+    showToast("Copy failed");
+  }
+});
+hostShareCopy?.addEventListener("click", async () => {
+  if (!hostShareUrl?.value) return;
+  try {
+    await navigator.clipboard.writeText(hostShareUrl.value);
+    showToast("URL copied");
+  } catch {
+    showToast("Copy failed");
+  }
+});
+
+// --- Client UI events
+clientToggle?.addEventListener("change", async () => {
+  clientConfig.enabled = !!clientToggle.checked;
+  if (clientConfig.enabled && (!clientConfig.host || !clientConfig.token)) {
+    showToast("Set host + token first");
+    clientConfig.enabled = false;
+    clientToggle.checked = false;
+    return;
+  }
+  await persistNetSettings();
+  await applyClientConfig();
+});
+clientHostEl?.addEventListener("change", async () => {
+  clientConfig.host = clientHostEl.value.trim();
+  await persistNetSettings();
+  if (clientConfig.enabled) await applyClientConfig();
+  else paintClientUI();
+});
+clientPortEl?.addEventListener("change", async () => {
+  const n = Number(clientPortEl.value);
+  if (!Number.isFinite(n) || n < 1024 || n > 65535) {
+    showToast("Port must be 1024–65535");
+    clientPortEl.value = String(clientConfig.port);
+    return;
+  }
+  clientConfig.port = Math.round(n);
+  await persistNetSettings();
+  if (clientConfig.enabled) await applyClientConfig();
+  else paintClientUI();
+});
+clientTokenEl?.addEventListener("change", async () => {
+  clientConfig.token = clientTokenEl.value.trim();
+  await persistNetSettings();
+  if (clientConfig.enabled) await applyClientConfig();
+  else paintClientUI();
+});
+// Paste a host's share URL (spotlight://host:port?token=…) to fill all three fields.
+clientTokenPaste?.addEventListener("click", async () => {
+  let text = "";
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    showToast("Clipboard read failed");
+    return;
+  }
+  text = text.trim();
+  if (!text) {
+    showToast("Clipboard empty");
+    return;
+  }
+  const parsed = parseShareUrl(text);
+  if (!parsed) {
+    showToast("Not a share URL");
+    return;
+  }
+  clientConfig.host = parsed.host;
+  clientConfig.port = parsed.port;
+  clientConfig.token = parsed.token;
+  await persistNetSettings();
+  paintClientUI();
+  showToast(`Parsed ${parsed.host}:${parsed.port}`);
+});
+
+function parseShareUrl(s: string): { host: string; port: number; token: string } | null {
+  // Accept spotlight://host:port?token=...
+  const m = s.match(/^spotlight:\/\/([^:/?]+):(\d+)(?:\/?\?token=([^&\s]+))?$/);
+  if (!m) return null;
+  const port = Number(m[2]);
+  if (!Number.isFinite(port)) return null;
+  return {
+    host: m[1],
+    port,
+    token: decodeURIComponent(m[3] ?? ""),
+  };
+}
 
 // ============================================================
 // Attachment + pasted-text state

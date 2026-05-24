@@ -109,6 +109,61 @@
           </div>
           <div class="settings-hint">Click a field, hold modifiers (⌘ ⌥ ⌃ ⇧) and press a key. Esc to cancel.</div>
         </div>
+
+        <div class="settings-section net-section">
+          <div class="net-head">
+            <div class="settings-section-title">Host</div>
+            <label class="net-toggle">
+              <input type="checkbox" id="host-toggle" />
+              <span class="net-toggle-track"><span class="net-toggle-thumb"></span></span>
+              <span class="net-toggle-label">Off</span>
+            </label>
+          </div>
+          <div class="net-hint">Accept incoming queries from other devices on your Tailscale network.</div>
+          <div class="settings-row">
+            <label>Port</label>
+            <input id="host-port" type="number" class="net-input net-input-short" min="1024" max="65535" value="47330" />
+          </div>
+          <div class="settings-row">
+            <label>Auth token</label>
+            <input id="host-token" type="text" class="net-input net-input-mono" placeholder="auto-generated" />
+            <button id="host-token-regen" class="net-btn" type="button" title="Regenerate">↻</button>
+            <button id="host-token-copy" class="net-btn" type="button" title="Copy token">⎘</button>
+          </div>
+          <div class="settings-row net-share-row hidden" id="host-share-row">
+            <label>Share URL</label>
+            <input id="host-share-url" type="text" class="net-input net-input-mono" readonly />
+            <button id="host-share-copy" class="net-btn" type="button" title="Copy URL">⎘</button>
+          </div>
+          <div class="net-status" id="host-status">Stopped</div>
+        </div>
+
+        <div class="settings-section net-section">
+          <div class="net-head">
+            <div class="settings-section-title">Client</div>
+            <label class="net-toggle">
+              <input type="checkbox" id="client-toggle" />
+              <span class="net-toggle-track"><span class="net-toggle-thumb"></span></span>
+              <span class="net-toggle-label">Off</span>
+            </label>
+          </div>
+          <div class="net-hint">Route queries to a remote spotlight host instead of the local daemon.</div>
+          <div class="settings-row">
+            <label>Host</label>
+            <input id="client-host" type="text" class="net-input net-input-mono" placeholder="hostname or IP (e.g. mac-mini.tail-abc.ts.net)" />
+          </div>
+          <div class="settings-row">
+            <label>Port</label>
+            <input id="client-port" type="number" class="net-input net-input-short" min="1024" max="65535" value="47330" />
+          </div>
+          <div class="settings-row">
+            <label>Auth token</label>
+            <input id="client-token" type="text" class="net-input net-input-mono" placeholder="paste host's token" />
+            <button id="client-token-paste" class="net-btn" type="button" title="Paste share URL">⇩</button>
+          </div>
+          <div class="net-status" id="client-status">Local</div>
+        </div>
+
         <div class="settings-footer">
           <button id="settings-close" type="button">Close</button>
         </div>

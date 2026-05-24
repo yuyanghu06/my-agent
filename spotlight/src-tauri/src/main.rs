@@ -2,10 +2,13 @@
 
 use base64::{engine::general_purpose, Engine as _};
 use serde::Serialize;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
@@ -28,11 +31,11 @@ fn capture_child() -> &'static Mutex<Option<(Child, String)>> {
 /// Write half of the socket connection that owns the current in-flight query.
 /// cancel_query / interrupt_query write control messages here so the daemon
 /// receives them on the same connection it associates with the live query.
-static ACTIVE_WRITER: OnceLock<Mutex<Option<UnixStream>>> = OnceLock::new();
-fn active_writer() -> &'static Mutex<Option<UnixStream>> {
+static ACTIVE_WRITER: OnceLock<Mutex<Option<AgentStream>>> = OnceLock::new();
+fn active_writer() -> &'static Mutex<Option<AgentStream>> {
     ACTIVE_WRITER.get_or_init(|| Mutex::new(None))
 }
-fn set_active_writer(s: Option<UnixStream>) {
+fn set_active_writer(s: Option<AgentStream>) {
     if let Ok(mut g) = active_writer().lock() {
         *g = s;
     }
@@ -43,6 +46,325 @@ fn write_control(json: &serde_json::Value) -> Result<(), String> {
     let mut s = s.try_clone().map_err(|e| e.to_string())?;
     writeln!(s, "{}", json).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ============================================================
+// Transport: local Unix socket OR Tailscale-reachable TCP
+// ============================================================
+
+/// Unified read+write stream so the rest of the file doesn't care whether
+/// we're talking to /tmp/claude-agent.sock or to a remote spotlight host
+/// over TCP (typically via Tailscale).
+pub enum AgentStream {
+    Unix(UnixStream),
+    Tcp(TcpStream),
+}
+
+impl AgentStream {
+    fn try_clone(&self) -> std::io::Result<AgentStream> {
+        Ok(match self {
+            AgentStream::Unix(s) => AgentStream::Unix(s.try_clone()?),
+            AgentStream::Tcp(s) => AgentStream::Tcp(s.try_clone()?),
+        })
+    }
+}
+
+impl Read for AgentStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            AgentStream::Unix(s) => s.read(buf),
+            AgentStream::Tcp(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for AgentStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            AgentStream::Unix(s) => s.write(buf),
+            AgentStream::Tcp(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            AgentStream::Unix(s) => s.flush(),
+            AgentStream::Tcp(s) => s.flush(),
+        }
+    }
+}
+
+/// Client mode: when set, every connect_agent() call dials this remote host
+/// (which is running spotlight in host mode) instead of the local Unix socket.
+#[derive(Clone, Debug)]
+struct ClientConfig {
+    host: String,
+    port: u16,
+    token: String,
+}
+static CLIENT_CONFIG: OnceLock<Mutex<Option<ClientConfig>>> = OnceLock::new();
+fn client_config() -> &'static Mutex<Option<ClientConfig>> {
+    CLIENT_CONFIG.get_or_init(|| Mutex::new(None))
+}
+fn current_client_config() -> Option<ClientConfig> {
+    client_config().lock().ok().and_then(|g| g.clone())
+}
+
+/// Open a connection to whichever daemon we're configured to talk to. In
+/// client mode this is a TCP socket to a remote spotlight; the auth token is
+/// sent as the first line so the host can reject unauthenticated peers.
+fn connect_agent() -> Result<AgentStream, String> {
+    if let Some(cfg) = current_client_config() {
+        let addr = format!("{}:{}", cfg.host, cfg.port);
+        let s = TcpStream::connect_timeout(
+            &addr
+                .to_socket_addrs()
+                .map_err(|e| format!("bad host {}: {}", addr, e))?
+                .next()
+                .ok_or_else(|| format!("no address resolved for {}", addr))?,
+            Duration::from_secs(8),
+        )
+        .map_err(|e| format!("cannot reach host {}: {}", addr, e))?;
+        // Disable Nagle so streaming chunks don't queue.
+        let _ = s.set_nodelay(true);
+        let mut s_writer = s
+            .try_clone()
+            .map_err(|e| format!("clone tcp: {}", e))?;
+        writeln!(s_writer, "{}", serde_json::json!({ "auth": cfg.token }))
+            .map_err(|e| format!("auth write: {}", e))?;
+        Ok(AgentStream::Tcp(s))
+    } else {
+        let s = UnixStream::connect(SOCKET_PATH)
+            .map_err(|e| format!("Cannot reach daemon at {}: {}", SOCKET_PATH, e))?;
+        Ok(AgentStream::Unix(s))
+    }
+}
+
+// ============================================================
+// Host mode: TCP listener that bridges to /tmp/claude-agent.sock
+// ============================================================
+
+struct HostState {
+    port: u16,
+    #[allow(dead_code)]
+    token: String,
+    running: Arc<AtomicBool>,
+}
+static HOST_STATE: OnceLock<Mutex<Option<HostState>>> = OnceLock::new();
+fn host_state() -> &'static Mutex<Option<HostState>> {
+    HOST_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn start_host(port: u16, token: String) -> Result<(), String> {
+    stop_host_inner();
+    let listener = TcpListener::bind(("0.0.0.0", port))
+        .map_err(|e| format!("bind 0.0.0.0:{} failed: {}", port, e))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("set_nonblocking: {}", e))?;
+    let running = Arc::new(AtomicBool::new(true));
+    let running_thread = running.clone();
+    let token_thread = token.clone();
+    std::thread::spawn(move || {
+        eprintln!("[spotlight] host listening on 0.0.0.0:{}", port);
+        loop {
+            if !running_thread.load(Ordering::Relaxed) {
+                break;
+            }
+            match listener.accept() {
+                Ok((stream, peer)) => {
+                    let token_for_conn = token_thread.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = handle_host_conn(stream, &token_for_conn) {
+                            eprintln!("[spotlight] host conn from {} ended: {}", peer, e);
+                        }
+                    });
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                Err(e) => {
+                    eprintln!("[spotlight] host accept error: {}", e);
+                    break;
+                }
+            }
+        }
+        eprintln!("[spotlight] host listener stopped");
+    });
+    if let Ok(mut g) = host_state().lock() {
+        *g = Some(HostState { port, token, running });
+    }
+    Ok(())
+}
+
+fn stop_host_inner() {
+    if let Ok(mut g) = host_state().lock() {
+        if let Some(prev) = g.take() {
+            prev.running.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Read a single \n-terminated line, byte by byte. Avoids BufReader's pull-
+/// ahead so the remaining bytes on the wire belong cleanly to the daemon.
+fn read_line_raw(s: &mut TcpStream, max: usize) -> std::io::Result<String> {
+    let mut buf = Vec::with_capacity(64);
+    let mut b = [0u8; 1];
+    loop {
+        let n = s.read(&mut b)?;
+        if n == 0 {
+            break;
+        }
+        if b[0] == b'\n' {
+            break;
+        }
+        buf.push(b[0]);
+        if buf.len() > max {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "line too long",
+            ));
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn handle_host_conn(mut tcp: TcpStream, expected_token: &str) -> Result<(), String> {
+    // Limit the handshake to a few seconds so a stalled peer doesn't pin a
+    // thread forever. Cleared once we move into bridge mode.
+    let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = tcp.set_nodelay(true);
+
+    let first = read_line_raw(&mut tcp, 4096).map_err(|e| format!("read auth: {}", e))?;
+    let v: serde_json::Value = serde_json::from_str(first.trim())
+        .map_err(|e| format!("auth parse: {}", e))?;
+    let auth = v.get("auth").and_then(|a| a.as_str()).unwrap_or("");
+    if auth.is_empty() || auth != expected_token {
+        let _ = writeln!(
+            tcp,
+            "{}",
+            serde_json::json!({ "error": "unauthorized", "done": true })
+        );
+        return Err("bad token".into());
+    }
+
+    let _ = tcp.set_read_timeout(None);
+
+    let daemon = UnixStream::connect(SOCKET_PATH)
+        .map_err(|e| format!("daemon connect: {}", e))?;
+
+    let tcp_for_in = tcp.try_clone().map_err(|e| format!("clone tcp: {}", e))?;
+    let tcp_for_intercept = tcp.try_clone().map_err(|e| format!("clone tcp: {}", e))?;
+    let mut daemon_writer = daemon.try_clone().map_err(|e| format!("clone unix: {}", e))?;
+    let mut daemon_reader = daemon;
+    let mut tcp_out = tcp;
+
+    // TCP -> daemon: line-aware so {"upload":...} can be intercepted by us
+    // and never reaches the daemon (which only knows about queries). All
+    // other lines forward verbatim.
+    let t1 = std::thread::spawn(move || {
+        let reader = BufReader::new(tcp_for_in);
+        let mut intercept_writer = tcp_for_intercept;
+        for line in reader.lines() {
+            let line = match line { Ok(l) => l, Err(_) => break };
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(up) = v.get("upload") {
+                    handle_upload(up, &mut intercept_writer);
+                    continue;
+                }
+            }
+            if writeln!(daemon_writer, "{}", line).is_err() {
+                break;
+            }
+        }
+        let _ = daemon_writer.shutdown(std::net::Shutdown::Both);
+    });
+
+    // Daemon -> TCP: raw byte pipe — no need to inspect.
+    let t2 = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut daemon_reader, &mut tcp_out);
+        let _ = tcp_out.shutdown(std::net::Shutdown::Both);
+    });
+    let _ = t1.join();
+    let _ = t2.join();
+    Ok(())
+}
+
+/// Save an uploaded payload to disk and write a JSON reply back to the
+/// peer. Used by the iOS client (and any future client) to ship images and
+/// arbitrary files into the Mac's filesystem so the daemon can reference
+/// them by path. Kind:"image" lands in spotlight-images/, anything else in
+/// spotlight-files/.
+fn handle_upload(payload: &serde_json::Value, tcp_writer: &mut TcpStream) {
+    let kind = payload.get("kind").and_then(|k| k.as_str()).unwrap_or("file");
+    let name = payload
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("upload");
+    let data_b64 = payload
+        .get("data")
+        .and_then(|d| d.as_str())
+        .unwrap_or("");
+    let bytes = match general_purpose::STANDARD.decode(data_b64) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = writeln!(
+                tcp_writer,
+                "{}",
+                serde_json::json!({ "upload_ok": false, "error": format!("decode: {}", e) })
+            );
+            return;
+        }
+    };
+    // Hard cap so an evil peer can't fill the disk in one shot.
+    if bytes.len() > 50 * 1024 * 1024 {
+        let _ = writeln!(
+            tcp_writer,
+            "{}",
+            serde_json::json!({ "upload_ok": false, "error": "payload too large (>50MB)" })
+        );
+        return;
+    }
+
+    let dir = if kind == "image" { IMAGES_DIR } else { FILES_DIR };
+    let dir = std::path::PathBuf::from(dir);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        let _ = writeln!(
+            tcp_writer,
+            "{}",
+            serde_json::json!({ "upload_ok": false, "error": format!("mkdir: {}", e) })
+        );
+        return;
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .collect();
+    let safe = if safe.is_empty() { "upload".to_string() } else { safe };
+    let path = dir.join(format!("{}_{}", ts, safe));
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        let _ = writeln!(
+            tcp_writer,
+            "{}",
+            serde_json::json!({ "upload_ok": false, "error": format!("write: {}", e) })
+        );
+        return;
+    }
+    let _ = writeln!(
+        tcp_writer,
+        "{}",
+        serde_json::json!({
+            "upload_ok": true,
+            "path": path.to_string_lossy(),
+            "size": bytes.len(),
+        })
+    );
 }
 
 #[derive(Serialize, Clone)]
@@ -59,12 +381,10 @@ enum StreamEvent {
 #[tauri::command]
 async fn send_query(query: String, on_event: Channel<StreamEvent>) -> Result<(), String> {
     std::thread::spawn(move || {
-        let stream = match UnixStream::connect(SOCKET_PATH) {
+        let stream = match connect_agent() {
             Ok(s) => s,
             Err(e) => {
-                let _ = on_event.send(StreamEvent::Error {
-                    message: format!("Cannot reach daemon at {}: {}", SOCKET_PATH, e),
-                });
+                let _ = on_event.send(StreamEvent::Error { message: e });
                 return;
             }
         };
@@ -162,7 +482,7 @@ async fn cancel_query() -> Result<(), String> {
 /// a saved session that has a captured claudeSessionId.
 #[tauri::command]
 async fn resume_session(uuid: String) -> Result<(), String> {
-    let mut s = UnixStream::connect(SOCKET_PATH).map_err(|e| e.to_string())?;
+    let mut s = connect_agent()?;
     writeln!(s, "{}", serde_json::json!({ "resume": uuid })).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -173,7 +493,7 @@ async fn resume_session(uuid: String) -> Result<(), String> {
 async fn start_fresh_session() -> Result<(), String> {
     // One-shot socket connection — the daemon stores the flag globally, so
     // we don't need to reuse the active query's connection.
-    let mut s = UnixStream::connect(SOCKET_PATH).map_err(|e| e.to_string())?;
+    let mut s = connect_agent()?;
     writeln!(s, "{}", serde_json::json!({ "fresh": true })).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -471,6 +791,117 @@ async fn write_sessions(json: String) -> Result<(), String> {
     Ok(())
 }
 
+// ============================================================
+// Host/Client mode commands
+// ============================================================
+
+#[derive(Serialize)]
+struct HostStatus {
+    running: bool,
+    port: u16,
+}
+
+#[tauri::command]
+async fn set_client_mode(enabled: bool, host: String, port: u16, token: String) -> Result<(), String> {
+    let mut g = client_config().lock().map_err(|e| e.to_string())?;
+    if enabled {
+        if host.trim().is_empty() {
+            return Err("host is empty".into());
+        }
+        if token.trim().is_empty() {
+            return Err("token is empty".into());
+        }
+        *g = Some(ClientConfig { host, port, token });
+    } else {
+        *g = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_host_mode(enabled: bool, port: u16, token: String) -> Result<HostStatus, String> {
+    if enabled {
+        if token.trim().is_empty() {
+            return Err("token is empty".into());
+        }
+        start_host(port, token)?;
+        Ok(HostStatus { running: true, port })
+    } else {
+        stop_host_inner();
+        Ok(HostStatus { running: false, port })
+    }
+}
+
+#[tauri::command]
+async fn host_status() -> Result<HostStatus, String> {
+    let g = host_state().lock().map_err(|e| e.to_string())?;
+    Ok(match g.as_ref() {
+        Some(s) => HostStatus { running: true, port: s.port },
+        None => HostStatus { running: false, port: 0 },
+    })
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct NetworkInfo {
+    hostname: String,
+    tailscale_ip: Option<String>,
+    tailscale_host: Option<String>,
+}
+
+/// Best-effort lookup of the host's Tailscale identity so the host-mode
+/// settings card can show a clickable address. Falls back to plain hostname
+/// when the tailscale CLI isn't installed (Tailscale ships as an app on
+/// macOS; the user can still type the IP manually on the client device).
+#[tauri::command]
+async fn network_info() -> Result<NetworkInfo, String> {
+    let mut info = NetworkInfo::default();
+    if let Ok(out) = Command::new("/bin/hostname").output() {
+        if out.status.success() {
+            info.hostname = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        }
+    }
+    // Try a few likely locations for the tailscale CLI.
+    let ts_paths = [
+        "/usr/local/bin/tailscale",
+        "/opt/homebrew/bin/tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ];
+    for p in ts_paths {
+        if !std::path::Path::new(p).exists() {
+            continue;
+        }
+        if let Ok(out) = Command::new(p).args(["ip", "-4"]).output() {
+            if out.status.success() {
+                let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !ip.is_empty() {
+                    info.tailscale_ip = Some(ip);
+                }
+            }
+        }
+        if let Ok(out) = Command::new(p).args(["status", "--json"]).output() {
+            if out.status.success() {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    if let Some(name) = v.get("Self").and_then(|s| s.get("DNSName")).and_then(|d| d.as_str()) {
+                        info.tailscale_host = Some(name.trim_end_matches('.').to_string());
+                    }
+                }
+            }
+        }
+        break;
+    }
+    Ok(info)
+}
+
+#[tauri::command]
+async fn generate_token() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    // /dev/urandom is on every macOS install; std doesn't expose a random.
+    let mut f = std::fs::File::open("/dev/urandom").map_err(|e| e.to_string())?;
+    f.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes.iter().map(|b| format!("{:02x}", b)).collect())
+}
+
 #[tauri::command]
 async fn read_settings() -> Result<String, String> {
     let path = std::path::PathBuf::from(SETTINGS_FILE);
@@ -707,6 +1138,11 @@ fn main() {
             start_screen_capture,
             stop_screen_capture,
             capture_screenshot,
+            set_client_mode,
+            set_host_mode,
+            host_status,
+            network_info,
+            generate_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running spotlight");

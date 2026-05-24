@@ -177,6 +177,77 @@ Memory updates take effect at the next session restart. The daemon watches MEMOR
 
 ---
 
+## Agent Architecture — Spotlight + Daemon + iOS
+
+The agent runs as a tree of three components living under `~/Documents/my-agent/`:
+
+```
+daemon.js                          Node daemon — owns the claude CLI child, listens on
+                                   /tmp/claude-agent.sock, supervises memory reloads.
+
+spotlight/                         Tauri 2 macOS app. Default frontend on the laptop /
+  ├─ src-tauri/src/main.rs         Mac mini. Talks to the daemon over the Unix socket
+  ├─ src/main.ts                   OR (in client mode) to a remote spotlight host over
+  └─ src/style.css                 TCP. Settings UI also exposes Host mode, which runs
+                                   a TCP listener that bridges to the local Unix socket.
+
+spotlight-ios/                     SwiftUI iOS app (Xcode 15+, iOS 17+). Client-only —
+  ├─ Spotlight/SpotlightApp.swift  never spawns Claude. Connects to a Mac spotlight
+  ├─ Spotlight/Services/           host over TCP (typically via Tailscale).
+  ├─ Spotlight/Views/
+  └─ Spotlight.xcodeproj/
+```
+
+### Spotlight Host / Client modes
+
+Both the desktop spotlight (Settings panel) and the iOS app (Settings sheet) speak
+the same wire protocol — newline-delimited JSON, auth as the first line:
+
+```
+client → host:  {"auth":"<token>"}\n
+client → host:  {"query":"..."}\n
+host   → client: {"session_id":"..."}\n
+host   → client: {"chunk":"..."}\n  (many)
+host   → client: {"tool":"Read","label":"path/to/file"}\n
+host   → client: {"done":true,"response":"..."}\n
+```
+
+Plus `{"cancel":true}` / `{"interrupt":true,"query":"..."}` on the live connection,
+and one-shot `{"fresh":true}` / `{"resume":"<uuid>"}` on a new connection.
+
+The host bridge also intercepts `{"upload":{"kind":"image","name":"...","data":"<b64>"}}`
+without forwarding to the daemon — used by iOS to ship images into
+`spotlight-images/` so the daemon's claude child can read them by path.
+
+### Settings file
+
+Persisted at `spotlight-sessions/settings.json`:
+
+```json
+{
+  "hotkeys":  { "togglePin": "...", ... },
+  "host":   { "enabled": false, "port": 47330, "token": "..." },
+  "client": { "enabled": false, "host": "...", "port": 47330, "token": "..." }
+}
+```
+
+Default host port is `47330`. When host mode is on, the spotlight settings card
+shows a `spotlight://host:port?token=...` share URL that the iOS app can parse
+via its **Paste share URL** button.
+
+### Tailscale role
+
+Spotlight does not depend on Tailscale being installed — the host just binds
+`0.0.0.0:<port>`. But the practical assumption is that the Mac mini (host) and
+the laptop/phone (client) are on the same tailnet; the per-host token gates
+auth on top of that.
+
+If `tailscale` is installed (`/usr/local/bin/tailscale` or `/opt/homebrew/bin/tailscale`),
+the spotlight host settings card auto-fills the tailnet hostname / IP into
+the share URL via the `network_info` Tauri command.
+
+---
+
 ## Morning Briefing Format
 
 When asked for a morning briefing or triggered via cron:
