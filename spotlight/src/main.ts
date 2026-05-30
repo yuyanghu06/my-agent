@@ -24,6 +24,7 @@ const composerWrap = document.getElementById("composer-wrap") as HTMLDivElement;
 const response = document.getElementById("response") as HTMLDivElement;
 const responseInner = document.getElementById("response-inner") as HTMLDivElement;
 const bar = document.querySelector(".bar") as HTMLDivElement;
+const app = document.getElementById("app") as HTMLDivElement | null;
 const statusLine = document.getElementById("status") as HTMLDivElement;
 const commandsEl = document.getElementById("commands") as HTMLDivElement;
 const attachmentsEl = document.getElementById("attachments") as HTMLDivElement;
@@ -32,9 +33,14 @@ const win = getCurrentWindow();
 const pinBtn = document.getElementById("pin-btn") as HTMLButtonElement | null;
 const recordBtn = document.getElementById("record-btn") as HTMLButtonElement | null;
 const autoshotBtn = document.getElementById("autoshot-btn") as HTMLButtonElement | null;
+const sessionsBtn = document.getElementById("sessions-btn") as HTMLButtonElement | null;
+const sessionsBadge = document.getElementById("sessions-badge") as HTMLSpanElement | null;
 const settingsBtn = document.getElementById("settings-btn") as HTMLButtonElement | null;
 const settingsPanel = document.getElementById("settings-panel") as HTMLDivElement | null;
 const settingsCloseBtn = document.getElementById("settings-close") as HTMLButtonElement | null;
+const actionsBtn = document.getElementById("actions-btn") as HTMLButtonElement | null;
+const actionsBadge = document.getElementById("actions-badge") as HTMLSpanElement | null;
+const actionsMenu = document.getElementById("actions-menu") as HTMLDivElement | null;
 
 let pinned = false;
 let recording = false;
@@ -44,6 +50,12 @@ pinBtn?.addEventListener("click", (e) => {
   e.preventDefault();
   e.stopPropagation();
   void togglePin();
+});
+
+sessionsBtn?.addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  void openSessionsPanel();
 });
 
 async function togglePin() {
@@ -164,6 +176,121 @@ settingsCloseBtn?.addEventListener("click", (e) => {
   e.stopPropagation();
   hideSettingsPanel();
 });
+
+// ============================================================
+// Actions kebab menu — collapses pin/record/autoshot/sessions/settings
+// into a single dropdown. The five buttons keep their IDs (handlers above
+// are unchanged); we only toggle the menu's visibility around them.
+// ============================================================
+actionsBtn?.addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  toggleActionsMenu();
+});
+// Close after a row is chosen. Capture phase: the row handlers call
+// stopPropagation, so a bubble listener here would never fire.
+actionsMenu?.addEventListener(
+  "click",
+  (e) => {
+    if ((e.target as HTMLElement).closest(".actions-row")) closeActionsMenu();
+  },
+  true,
+);
+// Outside click closes the menu.
+document.addEventListener("click", (e) => {
+  if (!actionsMenu || actionsMenu.classList.contains("hidden")) return;
+  const t = e.target as Node;
+  if (actionsMenu.contains(t) || actionsBtn?.contains(t)) return;
+  closeActionsMenu();
+});
+// Esc closes the menu (not the window) while it's open.
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (
+      e.key === "Escape" &&
+      actionsMenu &&
+      !actionsMenu.classList.contains("hidden")
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeActionsMenu();
+    }
+  },
+  true,
+);
+
+function toggleActionsMenu() {
+  if (!actionsMenu) return;
+  if (actionsMenu.classList.contains("hidden")) openActionsMenu();
+  else closeActionsMenu();
+}
+function openActionsMenu() {
+  if (!actionsMenu) return;
+  actionsMenu.classList.remove("hidden");
+  actionsBtn?.classList.add("open");
+  actionsBtn?.setAttribute("aria-expanded", "true");
+  const idle =
+    (settingsPanel?.classList.contains("hidden") ?? true) &&
+    response.classList.contains("empty");
+  const needed = bar.offsetHeight + 196;
+  if (idle) {
+    // Float the menu over the bar: keep the bar bar-sized, make the rest of the
+    // window transparent so no tall glass box appears below the bar.
+    app?.classList.add("menu-float");
+    invoke("resize_height", { height: Math.min(MAX_HEIGHT, needed) }).catch(() => {});
+  } else {
+    // A conversation/settings already fills the window — overlay, grow only if
+    // the menu would be clipped (never shrink existing content).
+    const target = Math.min(MAX_HEIGHT, Math.max(window.innerHeight, needed));
+    invoke("resize_height", { height: target }).catch(() => {});
+  }
+}
+function closeActionsMenu() {
+  if (!actionsMenu) return;
+  actionsMenu.classList.add("hidden");
+  actionsBtn?.classList.remove("open");
+  actionsBtn?.setAttribute("aria-expanded", "false");
+  app?.classList.remove("menu-float");
+  const settingsHidden = settingsPanel?.classList.contains("hidden") ?? true;
+  if (settingsHidden && response.classList.contains("empty")) snapToMin();
+  else if (settingsHidden) fitWindow();
+  requestGlassRepaint();
+}
+
+// ============================================================
+// backdrop-filter repaint fix
+// WebKit re-samples a backdrop-filter's backdrop lazily and intermittently
+// leaves it STALE after the window resizes — the glass goes flat / shows sharp
+// unblurred content through it. Forcing the affected layers to drop and
+// re-apply their filter once the resize settles makes WebKit re-sample.
+// ============================================================
+let glassRepaintTimer: number | undefined;
+function requestGlassRepaint() {
+  if (glassRepaintTimer) clearTimeout(glassRepaintTimer);
+  glassRepaintTimer = window.setTimeout(() => {
+    const els = [
+      app,
+      bar,
+      actionsMenu,
+      document.getElementById("commands"),
+      document.getElementById("reply-app"),
+    ].filter(Boolean) as HTMLElement[];
+    for (const el of els) {
+      el.style.backdropFilter = "none";
+      (el.style as unknown as { webkitBackdropFilter: string }).webkitBackdropFilter = "none";
+    }
+    requestAnimationFrame(() => {
+      for (const el of els) {
+        el.style.backdropFilter = "";
+        (el.style as unknown as { webkitBackdropFilter: string }).webkitBackdropFilter = "";
+      }
+    });
+  }, 45);
+}
+// Any window resize (programmatic resize_height, content growth, etc.) can
+// strand the blur — re-sample whenever the OS reports the window resized.
+void win.onResized(() => requestGlassRepaint());
 
 function toggleSettingsPanel() {
   if (!settingsPanel) return;
@@ -336,12 +463,22 @@ async function loadSettingsAtStartup() {
     if (parsed?.client && typeof parsed.client === "object") {
       clientConfig = { ...clientConfig, ...parsed.client };
     }
+    if (typeof parsed?.model === "string") {
+      currentModel = parsed.model;
+    }
   } catch (err) {
     console.warn("read_settings failed", err);
   }
   await registerAllHotkeys();
   await applyHostConfig({ silent: true });
   await applyClientConfig({ silent: true });
+  // Push the persisted model to the daemon so it survives daemon restarts —
+  // the daemon holds the active model in memory only.
+  if (currentModel) {
+    void invoke("set_model", { model: currentModel }).catch((e) =>
+      console.warn("set_model failed", e),
+    );
+  }
 }
 void loadSettingsAtStartup();
 
@@ -354,6 +491,47 @@ type ClientConfig = { enabled: boolean; host: string; port: number; token: strin
 
 let hostConfig: HostConfig = { enabled: false, port: 47330, token: "" };
 let clientConfig: ClientConfig = { enabled: false, host: "", port: 47330, token: "" };
+
+// Selected claude model. "" = CLI default. Persisted in settings.json under
+// `model` and pushed to the daemon (which adds --model) on startup + on change.
+type ModelChoice = { id: string; label: string; note: string };
+const MODELS: ModelChoice[] = [
+  { id: "", label: "Default", note: "Use the claude CLI's configured model" },
+  { id: "opus", label: "Opus 4.8", note: "Most capable, slower" },
+  { id: "sonnet", label: "Sonnet 4.6", note: "Balanced speed and capability" },
+  { id: "haiku", label: "Haiku 4.5", note: "Fastest, lightest" },
+];
+let currentModel = "";
+
+function modelLabel(id: string): string {
+  return MODELS.find((m) => m.id === id)?.label ?? id ?? "Default";
+}
+
+/** Re-send the active model to the daemon after a restart, retrying while the
+ *  socket comes back up. */
+async function repushModelAfterRestart() {
+  for (let i = 0; i < 8; i++) {
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      await invoke("set_model", { model: currentModel });
+      return;
+    } catch {
+      /* socket not ready yet — retry */
+    }
+  }
+}
+
+/** Persist the model into settings.json (preserving other keys). */
+async function persistModel(id: string) {
+  try {
+    const raw = await invoke<string>("read_settings");
+    const parsed = JSON.parse(raw || "{}");
+    parsed.model = id;
+    await invoke("write_settings", { json: JSON.stringify(parsed, null, 2) });
+  } catch (e) {
+    console.warn("persist model failed", e);
+  }
+}
 
 const hostToggle = document.getElementById("host-toggle") as HTMLInputElement | null;
 const hostPortEl = document.getElementById("host-port") as HTMLInputElement | null;
@@ -694,6 +872,9 @@ const COMMANDS: Command[] = [
     run: async () => {
       try {
         await invoke("restart_daemon");
+        // Daemon holds the active model in memory only — re-push once the
+        // socket is back up (launchctl restart takes a beat).
+        if (currentModel) void repushModelAfterRestart();
         showToast("Daemon restarted");
         clearAll();
       } catch (e) {
@@ -720,6 +901,16 @@ const COMMANDS: Command[] = [
     name: "/resume",
     description: "Resume the most recent saved session",
     run: () => resumeMostRecent(),
+  },
+  {
+    name: "/model",
+    description: "Switch the model claude runs",
+    run: () => openModelPicker(),
+  },
+  {
+    name: "/usage",
+    description: "Show cost and token usage",
+    run: () => openUsagePanel(),
   },
 ];
 
@@ -821,6 +1012,228 @@ let active = false;
 let toastEl: HTMLDivElement | null = null;
 let stickToBottom = true;
 let turnSeq = 0;
+
+// ============================================================
+// Workspaces — multiple parallel claude conversations ("tabs")
+//
+// Each workspace is one claude conversation, identified to the daemon by a
+// `tabId` so its child process runs independently of the others. Only one
+// workspace is mounted in the DOM at a time; the rest keep their rendered
+// turn nodes detached in `dom` so switching back is instant and live streams
+// into a hidden workspace keep updating its (off-screen) nodes.
+//
+// The module globals `turns` / `activeTurn` / `currentClaudeSessionId` /
+// `active` mirror the *currently mounted* workspace. switchWorkspace() copies
+// them out to the outgoing workspace and loads the incoming one's values in.
+// Streaming callbacks capture their owning workspace explicitly (not the
+// globals) so a background query routes to the right place.
+// ============================================================
+type Workspace = {
+  tabId: string;                 // daemon routing id ("default" or "tab-N")
+  localId: string;               // sessions.json persistence id
+  title: string;
+  turns: Turn[];
+  claudeSessionId: string | null;
+  activeTurn: Turn | null;
+  active: boolean;
+  scrollTop: number;
+  dom: Node[];                   // detached responseInner children while hidden
+};
+
+let wsSeq = 0;
+function newLocalId(): string {
+  return `s${Date.now()}_${++wsSeq}`;
+}
+
+function makeWorkspace(opts: { tabId: string; localId?: string; title?: string; claudeSessionId?: string | null }): Workspace {
+  return {
+    tabId: opts.tabId,
+    localId: opts.localId ?? newLocalId(),
+    title: opts.title ?? "New session",
+    turns: [],
+    claudeSessionId: opts.claudeSessionId ?? null,
+    activeTurn: null,
+    active: false,
+    scrollTop: 0,
+    dom: [],
+  };
+}
+
+let activeWs: Workspace = makeWorkspace({ tabId: "default" });
+const workspaces: Workspace[] = [activeWs];
+// The default workspace shares the global turns array as its backing store.
+activeWs.turns = turns;
+
+const OPEN_WS_KEY = "spotlight.openWs.v1";
+
+/** Copy the mounted globals back into the active workspace record. */
+function syncActiveWorkspace() {
+  activeWs.turns = turns;
+  activeWs.activeTurn = activeTurn;
+  activeWs.claudeSessionId = currentClaudeSessionId;
+  activeWs.active = active;
+  activeWs.scrollTop = response.scrollTop;
+}
+
+/** Mount a workspace: its turns become the globals and its nodes the DOM.
+ *  Does NOT save the currently-mounted one — callers handle that. */
+function loadWorkspace(ws: Workspace) {
+  activeWs = ws;
+  turns = ws.turns;
+  activeTurn = ws.activeTurn;
+  currentClaudeSessionId = ws.claudeSessionId;
+  setActive(ws.active);
+  responseInner.replaceChildren(...ws.dom);
+  ws.dom = [];
+  localStorage.setItem(CURRENT_SESSION_KEY, ws.localId);
+  setResponseEmpty(turns.length === 0);
+  updateSessionsBadge();
+  const top = ws.scrollTop;
+  requestAnimationFrame(() => {
+    response.scrollTop = top;
+  });
+}
+
+function switchWorkspace(target: Workspace) {
+  if (target === activeWs) return;
+  // Save the mounted workspace, detach its DOM (kept by reference).
+  syncActiveWorkspace();
+  activeWs.dom = Array.from(responseInner.childNodes);
+  responseInner.replaceChildren();
+  loadWorkspace(target);
+  persistOpenWorkspaces();
+}
+
+async function openWorkspace() {
+  let tabId: string;
+  try {
+    tabId = await invoke<string>("new_tab");
+  } catch {
+    tabId = `tab-local-${Date.now()}`;
+  }
+  const ws = makeWorkspace({ tabId });
+  workspaces.push(ws);
+  switchWorkspace(ws);
+  void invoke("start_fresh_session", { tabId }).catch(() => {});
+  composer.focus();
+  persistOpenWorkspaces();
+}
+
+async function closeWorkspace(ws: Workspace) {
+  void invoke("close_tab", { tabId: ws.tabId }).catch(() => {});
+  const wasActive = ws === activeWs;
+  const idx = workspaces.indexOf(ws);
+  if (idx >= 0) workspaces.splice(idx, 1);
+  if (wasActive) {
+    if (workspaces.length === 0) {
+      // Recreate a blank default so there's always at least one workspace.
+      const fresh = makeWorkspace({ tabId: "default" });
+      workspaces.push(fresh);
+      turns = [];
+      activeTurn = null;
+      currentClaudeSessionId = null;
+      loadWorkspace(fresh);
+      void invoke("start_fresh_session", { tabId: "default" }).catch(() => {});
+    } else {
+      const next = workspaces[Math.min(idx, workspaces.length - 1)];
+      loadWorkspace(next);
+    }
+  }
+  persistOpenWorkspaces();
+}
+
+function updateSessionsBadge() {
+  if (!sessionsBtn) return;
+  const n = workspaces.length;
+  sessionsBtn.classList.toggle("multi", n > 1);
+  const anyStreaming = workspaces.some((w) => (w === activeWs ? active : w.active));
+  sessionsBtn.classList.toggle("streaming", anyStreaming);
+  if (sessionsBadge) sessionsBadge.textContent = n > 1 ? String(n) : "";
+  // Mirror session count + streaming onto the collapsed kebab trigger.
+  actionsBtn?.classList.toggle("multi", n > 1);
+  actionsBtn?.classList.toggle("streaming", anyStreaming);
+  if (actionsBadge) actionsBadge.textContent = n > 1 ? String(n) : "";
+}
+
+function persistOpenWorkspaces() {
+  syncActiveWorkspace();
+  const list = workspaces.map((w) => ({
+    localId: w.localId,
+    claudeSessionId: w.claudeSessionId,
+    title: w.title,
+  }));
+  try {
+    localStorage.setItem(OPEN_WS_KEY, JSON.stringify(list));
+  } catch {}
+}
+
+// Restore the set of open workspaces persisted from a prior run. Falls back to
+// a single fresh default if nothing is persisted or anything goes wrong.
+async function initWorkspaces() {
+  let saved: { localId: string; claudeSessionId: string | null; title: string }[] = [];
+  try {
+    saved = JSON.parse(localStorage.getItem(OPEN_WS_KEY) || "[]");
+  } catch {}
+
+  if (!Array.isArray(saved) || saved.length === 0) {
+    activeWs.localId = localStorage.getItem(CURRENT_SESSION_KEY) || activeWs.localId;
+    void invoke("start_fresh_session", { tabId: "default" }).catch(() => {});
+    updateSessionsBadge();
+    return;
+  }
+
+  try {
+    const all = await loadSessions(true);
+    for (let i = 0; i < saved.length; i++) {
+      const rec = saved[i];
+      const snap = all.find((s) => s.id === rec.localId);
+      if (i === 0) {
+        // Reuse the pre-created default workspace + "default" tab.
+        activeWs.localId = rec.localId;
+        activeWs.title = rec.title || "Session";
+        activeWs.claudeSessionId = rec.claudeSessionId ?? null;
+        currentClaudeSessionId = activeWs.claudeSessionId;
+        localStorage.setItem(CURRENT_SESSION_KEY, rec.localId);
+        if (snap) {
+          rebuildTurnsFromSaved(snap);
+          armResume(snap, "default");
+        } else {
+          void invoke("start_fresh_session", { tabId: "default" }).catch(() => {});
+        }
+        syncActiveWorkspace();
+      } else {
+        let tabId: string;
+        try {
+          tabId = await invoke<string>("new_tab");
+        } catch {
+          tabId = `tab-local-${Date.now()}-${i}`;
+        }
+        const ws = makeWorkspace({
+          tabId,
+          localId: rec.localId,
+          title: rec.title || "Session",
+          claudeSessionId: rec.claudeSessionId ?? null,
+        });
+        workspaces.push(ws);
+        switchWorkspace(ws);
+        if (snap) {
+          rebuildTurnsFromSaved(snap);
+          armResume(snap, tabId);
+        } else {
+          void invoke("start_fresh_session", { tabId }).catch(() => {});
+        }
+        syncActiveWorkspace();
+      }
+    }
+    // Return to the first workspace as the mounted one.
+    if (workspaces[0]) switchWorkspace(workspaces[0]);
+  } catch (e) {
+    console.error("[spotlight] initWorkspaces failed:", e);
+    void invoke("start_fresh_session", { tabId: "default" }).catch(() => {});
+  }
+  updateSessionsBadge();
+  fitWindow();
+}
 
 function setActive(running: boolean) {
   active = running;
@@ -1027,6 +1440,152 @@ function appendTool(turn: Turn, name: string, label: string) {
   if (active && turn === activeTurn) ensureTyping(turn);
 }
 
+type QuestionOption = { label: string; description?: string };
+type QuestionDef = {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: QuestionOption[];
+};
+
+// Render an AskUserQuestion prompt as an interactive picker. The model's turn is
+// parked in the daemon until we POST the answer back via send_answer; until then
+// the card is the only actionable surface. answers is keyed by exact question
+// text -> chosen label(s) (multi-select joins with ", "; Other uses typed text).
+function appendQuestion(
+  turn: Turn,
+  requestId: string,
+  questions: QuestionDef[],
+  tabId: string,
+) {
+  removeTyping(turn);
+  const card = document.createElement("div");
+  card.className = "question-card";
+
+  // Per-question current selection state. Map question index -> Set of labels
+  // (single-select keeps at most one); "Other" text lives alongside.
+  const picks: Array<{ set: Set<string>; other: string }> = questions.map(() => ({
+    set: new Set<string>(),
+    other: "",
+  }));
+
+  questions.forEach((q, qi) => {
+    const block = document.createElement("div");
+    block.className = "question-block";
+    const head = document.createElement("div");
+    head.className = "question-head";
+    if (q.header) {
+      const chip = document.createElement("span");
+      chip.className = "question-chip";
+      chip.textContent = q.header;
+      head.appendChild(chip);
+    }
+    const qt = document.createElement("span");
+    qt.className = "question-text";
+    qt.textContent = q.question;
+    head.appendChild(qt);
+    block.appendChild(head);
+
+    const opts = document.createElement("div");
+    opts.className = "question-options";
+
+    const render = () => {
+      opts.querySelectorAll<HTMLElement>(".question-option").forEach((el) => {
+        const lbl = el.dataset.label || "";
+        el.classList.toggle("selected", picks[qi].set.has(lbl));
+      });
+      updateSubmit();
+    };
+
+    (q.options || []).forEach((o) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "question-option";
+      btn.dataset.label = o.label;
+      btn.innerHTML = `<span class="opt-label"></span>${
+        o.description ? `<span class="opt-desc"></span>` : ""
+      }`;
+      (btn.querySelector(".opt-label") as HTMLElement).textContent = o.label;
+      if (o.description) {
+        (btn.querySelector(".opt-desc") as HTMLElement).textContent = o.description;
+      }
+      btn.addEventListener("click", () => {
+        const set = picks[qi].set;
+        if (q.multiSelect) {
+          if (set.has(o.label)) set.delete(o.label);
+          else set.add(o.label);
+        } else {
+          set.clear();
+          set.add(o.label);
+        }
+        render();
+      });
+      opts.appendChild(btn);
+    });
+
+    // "Other" free-text — selecting it reveals an input; its value becomes the
+    // answer for this question (single-select replaces, multi-select appends).
+    const otherBtn = document.createElement("button");
+    otherBtn.type = "button";
+    otherBtn.className = "question-option question-other";
+    otherBtn.dataset.label = "__other__";
+    otherBtn.innerHTML = `<span class="opt-label">Other…</span>`;
+    const otherInput = document.createElement("input");
+    otherInput.type = "text";
+    otherInput.className = "question-other-input hidden";
+    otherInput.placeholder = "Type your answer…";
+    otherBtn.addEventListener("click", () => {
+      otherInput.classList.toggle("hidden");
+      if (!otherInput.classList.contains("hidden")) otherInput.focus();
+      updateSubmit();
+    });
+    otherInput.addEventListener("input", () => {
+      picks[qi].other = otherInput.value.trim();
+      updateSubmit();
+    });
+    opts.appendChild(otherBtn);
+    block.appendChild(opts);
+    block.appendChild(otherInput);
+    card.appendChild(block);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "question-actions";
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "question-submit";
+  submit.textContent = "Submit";
+  actions.appendChild(submit);
+  card.appendChild(actions);
+
+  function answeredCount(): number {
+    return picks.filter((p, i) => p.set.size > 0 || (questions[i] && p.other)).length;
+  }
+  function updateSubmit() {
+    submit.disabled = answeredCount() < questions.length;
+  }
+  updateSubmit();
+
+  submit.addEventListener("click", () => {
+    const answers: Record<string, string> = {};
+    questions.forEach((q, qi) => {
+      const labels = [...picks[qi].set];
+      if (picks[qi].other) labels.push(picks[qi].other);
+      answers[q.question] = labels.join(", ");
+    });
+    card.classList.add("answered");
+    card.querySelectorAll("button, input").forEach((el) =>
+      ((el as HTMLButtonElement).disabled = true),
+    );
+    void invoke("send_answer", { requestId, answers, tabId }).catch((e) =>
+      showError(String(e)),
+    );
+    if (active && turn === activeTurn) ensureTyping(turn);
+  });
+
+  turn.contentEl.appendChild(card);
+}
+
 function finalizeTurn(turn: Turn) {
   turn.done = true;
   removeTyping(turn);
@@ -1040,9 +1599,18 @@ function clearAll() {
   activeTurn = null;
   responseInner.innerHTML = "";
   currentClaudeSessionId = null;
-  localStorage.removeItem(CURRENT_SESSION_KEY);
-  void invoke("start_fresh_session").catch(() => {});
+  // Reset the active workspace to a genuinely new conversation (new localId so
+  // we don't overwrite the prior saved session) and start its tab fresh.
+  activeWs.turns = turns;
+  activeWs.activeTurn = null;
+  activeWs.claudeSessionId = null;
+  activeWs.localId = newLocalId();
+  activeWs.title = "New session";
+  localStorage.setItem(CURRENT_SESSION_KEY, activeWs.localId);
+  void invoke("start_fresh_session", { tabId: activeWs.tabId }).catch(() => {});
   setResponseEmpty(true);
+  updateSessionsBadge();
+  persistOpenWorkspaces();
   snapToMin();
 }
 
@@ -1715,7 +2283,7 @@ async function send(query: string, opts: { sideOf?: string; injectInto?: string 
       ensureTyping(turn);
       maybeFollow();
 
-      await invoke("interrupt_query", { query: payload });
+      await invoke("interrupt_query", { query: payload, tabId: activeWs.tabId });
       // The existing send_query channel keeps receiving events on the same
       // socket; daemon swapped the underlying claude child. Stream continues
       // into `activeTurn` (unchanged).
@@ -1768,41 +2336,71 @@ async function send(query: string, opts: { sideOf?: string; injectInto?: string 
 }
 
 async function runQuery(turn: Turn, payload: string) {
-  setActive(true);
-  activeTurn = turn;
+  // Bind this query to the workspace it was launched from. All streaming below
+  // routes to `ws`, not the live globals, so it keeps updating correctly even
+  // if the user switches to another workspace mid-stream. `visible` is checked
+  // fresh on each event because the active workspace can change at any time.
+  const ws = activeWs;
+  const tabId = ws.tabId;
+  const isVisible = () => ws === activeWs;
+
+  ws.active = true;
+  ws.activeTurn = turn;
+  if (isVisible()) {
+    setActive(true);
+    activeTurn = turn;
+  }
   ensureTyping(turn);
-  maybeFollow();
+  if (isVisible()) maybeFollow();
+  updateSessionsBadge();
+
+  const finishState = () => {
+    ws.activeTurn = null;
+    ws.active = false;
+    if (isVisible()) {
+      activeTurn = null;
+      setActive(false);
+    }
+    updateSessionsBadge();
+  };
 
   const channel = new Channel<
     | { kind: "chunk"; text: string }
     | { kind: "tool"; name: string; label: string }
     | { kind: "sessionid"; id: string }
+    | { kind: "question"; request_id: string; questions: QuestionDef[] }
     | { kind: "done"; response: string }
     | { kind: "error"; message: string }
     | { kind: "cancelled" }
   >();
 
   channel.onmessage = (msg) => {
-    // Route to whichever turn is currently active (handles interrupt swap).
-    const target = activeTurn ?? turn;
+    // Route to this workspace's active turn (handles interrupt swap), not the
+    // globally-mounted one.
+    const target = ws.activeTurn ?? turn;
     if (msg.kind === "chunk") {
       setDaemonDown(false);
       appendChunk(target, msg.text);
-      maybeFollow();
+      if (isVisible()) maybeFollow();
     } else if (msg.kind === "sessionid") {
-      // Capture the claude session UUID once per session — pinned for
+      // Capture the claude session UUID once per workspace — pinned for
       // future --resume calls when this saved session gets restored.
-      if (!currentClaudeSessionId) {
-        currentClaudeSessionId = msg.id;
-        saveSession();
+      if (!ws.claudeSessionId) {
+        ws.claudeSessionId = msg.id;
+        if (isVisible()) currentClaudeSessionId = msg.id;
+        persistOpenWorkspaces();
+        saveSession(ws);
       }
     } else if (msg.kind === "tool") {
       appendTool(target, msg.name, msg.label || "");
-      maybeFollow();
+      if (isVisible()) maybeFollow();
+    } else if (msg.kind === "question") {
+      appendQuestion(target, msg.request_id, msg.questions || [], ws.tabId);
+      if (isVisible()) maybeFollow();
     } else if (msg.kind === "done") {
       finalizeTurn(target);
-      activeTurn = null;
-      setActive(false);
+      finishState();
+      saveSession(ws);
     } else if (msg.kind === "cancelled") {
       removeTyping(target);
       const note = document.createElement("div");
@@ -1810,8 +2408,7 @@ async function runQuery(turn: Turn, payload: string) {
       note.textContent = "✕ cancelled";
       target.contentEl.appendChild(note);
       finalizeTurn(target);
-      activeTurn = null;
-      setActive(false);
+      finishState();
     } else if (msg.kind === "error") {
       removeTyping(target);
       const err = document.createElement("p");
@@ -1821,13 +2418,12 @@ async function runQuery(turn: Turn, payload: string) {
       if (/cannot reach daemon|connect|broken pipe|connection refused/i.test(msg.message)) {
         setDaemonDown(true);
       }
-      activeTurn = null;
-      setActive(false);
+      finishState();
     }
   };
 
   try {
-    await invoke("send_query", { query: payload, onEvent: channel });
+    await invoke("send_query", { query: payload, tabId, onEvent: channel });
   } catch (e) {
     removeTyping(turn);
     const msg = String(e);
@@ -1835,8 +2431,7 @@ async function runQuery(turn: Turn, payload: string) {
     if (/cannot reach daemon|connect|broken pipe|connection refused/i.test(msg)) {
       setDaemonDown(true);
     }
-    activeTurn = null;
-    setActive(false);
+    finishState();
   }
 }
 
@@ -2194,7 +2789,7 @@ composer.addEventListener("keydown", async (e) => {
     e.preventDefault();
     // Esc only interrupts; never wipes session (#8b).
     if (active) {
-      try { await invoke("cancel_query"); } catch {}
+      try { await invoke("cancel_query", { tabId: activeWs.tabId }); } catch {}
       return;
     }
     if (composer.value || attachedImages.length || attachedFiles.length || pastedTexts.length) {
@@ -2214,6 +2809,7 @@ composer.addEventListener("keydown", async (e) => {
     e.preventDefault();
     try {
       await invoke("restart_daemon");
+      if (currentModel) void repushModelAfterRestart();
       showToast("Daemon restarted");
     } catch (err) {
       showToast(String(err));
@@ -2311,7 +2907,9 @@ if (userMaxHeight != null && userMaxHeight > MIN_HEIGHT) {
 // from a prior session via window-state plugin) so the textarea isn't
 // hidden under the bottom edge.
 requestAnimationFrame(() => fitWindow());
-void invoke("start_fresh_session").catch(() => {});
+// Restore persisted workspaces (or start a single fresh default). Deferred to a
+// microtask so all module-level consts (CURRENT_SESSION_KEY etc.) are defined.
+queueMicrotask(() => void initWorkspaces());
 
 const appEl = document.getElementById("app") as HTMLDivElement;
 listen("spotlight-shown", () => {
@@ -2411,27 +3009,34 @@ async function writeSessions(list: SavedSession[]) {
   }
 }
 
-let saveTimer: number | null = null;
-function saveSession() {
-  if (saveTimer !== null) window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(async () => {
-    if (turns.length === 0) return;
-    const id = localStorage.getItem(CURRENT_SESSION_KEY) || `s${Date.now()}`;
-    localStorage.setItem(CURRENT_SESSION_KEY, id);
+// Per-workspace debounce so a background workspace finishing a turn doesn't
+// cancel the active workspace's pending save (and vice versa).
+const saveTimers = new Map<string, number>();
+function saveSession(ws: Workspace = activeWs) {
+  // Make sure the active workspace's record reflects the live globals before
+  // we snapshot it.
+  if (ws === activeWs) {
+    ws.turns = turns;
+    ws.claudeSessionId = currentClaudeSessionId;
+  }
+  const prev = saveTimers.get(ws.localId);
+  if (prev !== undefined) window.clearTimeout(prev);
+  const timer = window.setTimeout(async () => {
+    saveTimers.delete(ws.localId);
+    if (ws.turns.length === 0) return;
     // Use the most recent meaningful query as preview — easier to identify a
-    // session by where it ended up than where it started. Walk backwards
-    // through main-thread turns (skip side bubbles) for the first non-empty
-    // query, fall back to the first turn if none found.
-    const recent = [...turns]
+    // session by where it ended up than where it started.
+    const recent = [...ws.turns]
       .reverse()
       .find((t) => !t.side && t.query.trim().length > 0);
-    const preview = ((recent ?? turns[0])?.query || "").slice(0, 80);
+    const preview = ((recent ?? ws.turns[0])?.query || "").slice(0, 80);
+    ws.title = preview || ws.title;
     const snapshot: SavedSession = {
-      id,
+      id: ws.localId,
       savedAt: Date.now(),
       preview,
-      claudeSessionId: currentClaudeSessionId ?? undefined,
-      turns: turns.map((t) => ({
+      claudeSessionId: ws.claudeSessionId ?? undefined,
+      turns: ws.turns.map((t) => ({
         id: t.id,
         query: t.query,
         fullText: t.fullText,
@@ -2440,40 +3045,15 @@ function saveSession() {
         files: t.files,
       })),
     };
-    const all = (await loadSessions()).filter((s) => s.id !== id);
+    const all = (await loadSessions()).filter((s) => s.id !== ws.localId);
     all.unshift(snapshot);
     await writeSessions(all);
   }, 800);
+  saveTimers.set(ws.localId, timer);
 }
 
-function restoreSession(s: SavedSession) {
-  clearAll();
-  cancelHeightAnim();
-  localStorage.setItem(CURRENT_SESSION_KEY, s.id);
-
-  // Reattach claude's actual conversation state. Two paths:
-  //   (1) UUID present  → daemon will use --resume <uuid>, full context.
-  //   (2) UUID missing  → fall back to inlining the prior turns as a system
-  //       preamble in the user's NEXT query. claude won't have its real
-  //       session, but it will have the text history.
-  if (s.claudeSessionId) {
-    currentClaudeSessionId = s.claudeSessionId;
-    void invoke("resume_session", { uuid: s.claudeSessionId }).catch((e) => {
-      console.error("[spotlight] resume_session failed:", e);
-    });
-  } else {
-    // Build a preamble from the saved turns. It's stashed in pendingResumeContext
-    // and prepended on the very next user message.
-    const transcript = s.turns
-      .map((t) => `## you\n${t.query}\n\n## assistant\n${t.fullText}`)
-      .join("\n\n---\n\n");
-    pendingResumeContext =
-      `[Restored session — context below was a prior conversation. ` +
-      `Treat it as already-said context, not a new instruction.]\n\n` +
-      transcript +
-      `\n\n[end restored context]`;
-    void invoke("start_fresh_session").catch(() => {});
-  }
+/** Rebuild saved turns into the currently-mounted workspace's DOM + globals. */
+function rebuildTurnsFromSaved(s: SavedSession) {
   for (const t of s.turns) {
     const turn = createTurn({
       query: t.query,
@@ -2498,34 +3078,111 @@ function restoreSession(s: SavedSession) {
   maybeFollow();
 }
 
-async function openSessionPicker() {
-  const all = await loadSessions(true);
-  console.log("[spotlight] /sessions loaded", all.length, "entries");
-  if (all.length === 0) {
-    showToast("No saved sessions");
+/** Arm the daemon to reattach (or fall back to a text preamble) for a tab. */
+function armResume(s: SavedSession, tabId: string) {
+  if (s.claudeSessionId) {
+    void invoke("resume_session", { uuid: s.claudeSessionId, tabId }).catch((e) => {
+      console.error("[spotlight] resume_session failed:", e);
+    });
+  } else {
+    const transcript = s.turns
+      .map((t) => `## you\n${t.query}\n\n## assistant\n${t.fullText}`)
+      .join("\n\n---\n\n");
+    pendingResumeContext =
+      `[Restored session — context below was a prior conversation. ` +
+      `Treat it as already-said context, not a new instruction.]\n\n` +
+      transcript +
+      `\n\n[end restored context]`;
+    void invoke("start_fresh_session", { tabId }).catch(() => {});
+  }
+}
+
+/** Restore a saved session into the ACTIVE workspace (replaces its content). */
+function restoreSession(s: SavedSession) {
+  clearAll();
+  cancelHeightAnim();
+  activeWs.localId = s.id;
+  activeWs.title = s.preview || "Session";
+  activeWs.claudeSessionId = s.claudeSessionId ?? null;
+  currentClaudeSessionId = s.claudeSessionId ?? null;
+  localStorage.setItem(CURRENT_SESSION_KEY, s.id);
+  armResume(s, activeWs.tabId);
+  rebuildTurnsFromSaved(s);
+  persistOpenWorkspaces();
+}
+
+/** Open a saved session as its own workspace (switch to it if already open). */
+async function openSavedSession(s: SavedSession) {
+  const existing = workspaces.find((w) => w.localId === s.id);
+  if (existing) {
+    switchWorkspace(existing);
     return;
   }
-  // Grow the window so the picker card has room. snapToMin (from hidePalette)
-  // may still be animating down — cancel any in-flight resize animation so
-  // ours wins, then jump straight to the picker height.
+  let tabId: string;
+  try {
+    tabId = await invoke<string>("new_tab");
+  } catch {
+    tabId = `tab-local-${Date.now()}`;
+  }
+  const ws = makeWorkspace({
+    tabId,
+    localId: s.id,
+    title: s.preview || "Session",
+    claudeSessionId: s.claudeSessionId ?? null,
+  });
+  workspaces.push(ws);
+  switchWorkspace(ws); // mounts an empty responseInner for ws
+  rebuildTurnsFromSaved(s); // fills it
+  syncActiveWorkspace();
+  armResume(s, tabId);
+  persistOpenWorkspaces();
+}
+
+async function openSessionsPanel() {
+  const all = await loadSessions(true);
+  // Saved sessions that aren't already open as a workspace become the
+  // "reopen" list; open workspaces are shown at the top as live switchers.
+  const openIds = new Set(workspaces.map((w) => w.localId));
+  const saved = all.filter((s) => !openIds.has(s.id));
+
   cancelHeightAnim();
   const wantedH = 480;
   suppressResizeWatcher = true;
   cachedH = wantedH;
   void invoke("resize_height", { height: wantedH }).catch(() => {});
   setTimeout(() => { suppressResizeWatcher = false; }, 30);
+
   const overlay = document.createElement("div");
   overlay.className = "paste-overlay";
   overlay.innerHTML = `
     <div class="paste-overlay-card session-picker">
       <div class="paste-overlay-head">
         <span class="paste-tag">SESSIONS</span>
+        <button class="ws-new" title="New session">+ New</button>
         <button class="paste-overlay-close">×</button>
       </div>
       <div class="session-list"></div>
     </div>`;
   const list = overlay.querySelector(".session-list") as HTMLDivElement;
-  list.innerHTML = all
+
+  const openRows = workspaces
+    .map((w) => {
+      const streaming = w === activeWs ? active : w.active;
+      const isActive = w === activeWs;
+      const label = (w === activeWs ? currentClaudeSessionId : w.claudeSessionId)
+        ? w.title
+        : w.title || "New session";
+      return (
+        `<div class="session-row ws-row${isActive ? " ws-active" : ""}" data-ws="${escape(w.localId)}">` +
+        `<div class="ws-dot${streaming ? " streaming" : ""}"></div>` +
+        `<div class="session-preview">${escape(label || "(empty)")}</div>` +
+        `${workspaces.length > 1 ? `<button class="ws-close" data-close="${escape(w.localId)}" title="Close session">×</button>` : ""}` +
+        `</div>`
+      );
+    })
+    .join("");
+
+  const savedRows = saved
     .map(
       (s) =>
         `<div class="session-row" data-id="${escape(s.id)}">` +
@@ -2534,6 +3191,94 @@ async function openSessionPicker() {
         `</div>`,
     )
     .join("");
+
+  list.innerHTML =
+    `<div class="session-group-label">OPEN</div>${openRows}` +
+    (savedRows
+      ? `<div class="session-group-label">SAVED</div>${savedRows}`
+      : "");
+
+  document.body.appendChild(overlay);
+  const close = () => {
+    document.removeEventListener("keydown", onKey, true);
+    overlay.remove();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  overlay.querySelector(".paste-overlay-close")!.addEventListener("click", close);
+  overlay.querySelector(".ws-new")!.addEventListener("click", () => {
+    close();
+    void openWorkspace();
+  });
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  list.addEventListener("click", (e) => {
+    const el = e.target as HTMLElement;
+    // Close button on an open workspace row.
+    const closeId = el.closest(".ws-close")?.getAttribute("data-close");
+    if (closeId) {
+      e.stopPropagation();
+      const w = workspaces.find((x) => x.localId === closeId);
+      if (w) void closeWorkspace(w);
+      close();
+      return;
+    }
+    const row = el.closest(".session-row") as HTMLElement | null;
+    if (!row) return;
+    if (row.dataset.ws) {
+      const w = workspaces.find((x) => x.localId === row.dataset.ws);
+      if (w) switchWorkspace(w);
+      close();
+      return;
+    }
+    if (row.dataset.id) {
+      const sess = all.find((s) => s.id === row.dataset.id);
+      if (sess) void openSavedSession(sess);
+      close();
+    }
+  });
+}
+// Back-compat alias for the /sessions slash command.
+const openSessionPicker = openSessionsPanel;
+
+// ============================================================
+// /model — pick the model the daemon passes to claude (--model)
+// ============================================================
+
+function openModelPicker() {
+  cancelHeightAnim();
+  const wantedH = 320;
+  suppressResizeWatcher = true;
+  cachedH = wantedH;
+  void invoke("resize_height", { height: wantedH }).catch(() => {});
+  setTimeout(() => { suppressResizeWatcher = false; }, 30);
+
+  const overlay = document.createElement("div");
+  overlay.className = "paste-overlay";
+  const rows = MODELS.map(
+    (m) =>
+      `<div class="session-row model-row${m.id === currentModel ? " ws-active" : ""}" data-model="${escape(m.id)}">` +
+      `<div class="model-check">${m.id === currentModel ? "✓" : ""}</div>` +
+      `<div class="model-text"><div class="session-preview">${escape(m.label)}</div>` +
+      `<div class="session-meta">${escape(m.note)}</div></div>` +
+      `</div>`,
+  ).join("");
+  overlay.innerHTML = `
+    <div class="paste-overlay-card session-picker">
+      <div class="paste-overlay-head">
+        <span class="paste-tag">MODEL</span>
+        <button class="paste-overlay-close">×</button>
+      </div>
+      <div class="session-list">${rows}</div>
+    </div>`;
+
   document.body.appendChild(overlay);
   const close = () => {
     document.removeEventListener("keydown", onKey, true);
@@ -2551,12 +3296,114 @@ async function openSessionPicker() {
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  list.addEventListener("click", (e) => {
-    const row = (e.target as HTMLElement).closest(".session-row") as HTMLElement | null;
+  overlay.querySelector(".session-list")!.addEventListener("click", (e) => {
+    const row = (e.target as HTMLElement).closest(".model-row") as HTMLElement | null;
     if (!row) return;
-    const sess = all.find((s) => s.id === row.dataset.id);
-    if (sess) restoreSession(sess);
+    const id = row.dataset.model ?? "";
+    currentModel = id;
+    void persistModel(id);
+    void invoke("set_model", { model: id }).catch((err) =>
+      showToast("Model set failed: " + err),
+    );
+    showToast(`Model → ${modelLabel(id)}`);
     close();
+  });
+}
+
+// ============================================================
+// /usage — cost + token counters from the daemon
+// ============================================================
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+async function openUsagePanel() {
+  let stats: any;
+  try {
+    const raw = await invoke<string>("get_usage");
+    stats = JSON.parse(raw);
+  } catch (e) {
+    showToast("Usage unavailable: " + e);
+    return;
+  }
+
+  cancelHeightAnim();
+  const wantedH = 420;
+  suppressResizeWatcher = true;
+  cachedH = wantedH;
+  void invoke("resize_height", { height: wantedH }).catch(() => {});
+  setTimeout(() => { suppressResizeWatcher = false; }, 30);
+
+  const cost = typeof stats.costUsd === "number" ? stats.costUsd : 0;
+  const since = stats.since ? new Date(stats.since).toLocaleString() : "—";
+  const byModel = stats.byModel && typeof stats.byModel === "object" ? stats.byModel : {};
+  const modelRows = Object.entries(byModel)
+    .map(([model, b]: [string, any]) => {
+      const inTok = (b.inputTokens || 0) + (b.cacheReadTokens || 0) + (b.cacheCreateTokens || 0);
+      return (
+        `<div class="usage-model-row">` +
+        `<div class="usage-model-name">${escape(model)}</div>` +
+        `<div class="usage-model-stat">${b.turns || 0} turns</div>` +
+        `<div class="usage-model-stat">${fmtTokens(inTok)} in · ${fmtTokens(b.outputTokens || 0)} out</div>` +
+        `<div class="usage-model-stat">$${(b.costUsd || 0).toFixed(2)}</div>` +
+        `</div>`
+      );
+    })
+    .join("");
+
+  const overlay = document.createElement("div");
+  overlay.className = "paste-overlay";
+  overlay.innerHTML = `
+    <div class="paste-overlay-card session-picker usage-card">
+      <div class="paste-overlay-head">
+        <span class="paste-tag">USAGE</span>
+        <button class="usage-reset" title="Reset counters">Reset</button>
+        <button class="paste-overlay-close">×</button>
+      </div>
+      <div class="usage-body">
+        <div class="usage-hero">
+          <div class="usage-cost">$${cost.toFixed(2)}</div>
+          <div class="usage-cost-label">${stats.turns || 0} turn${stats.turns === 1 ? "" : "s"} · model: ${escape(modelLabel(stats.model || ""))}</div>
+        </div>
+        <div class="usage-grid">
+          <div class="usage-cell"><span class="usage-num">${fmtTokens(stats.inputTokens || 0)}</span><span class="usage-cap">Input</span></div>
+          <div class="usage-cell"><span class="usage-num">${fmtTokens(stats.outputTokens || 0)}</span><span class="usage-cap">Output</span></div>
+          <div class="usage-cell"><span class="usage-num">${fmtTokens(stats.cacheReadTokens || 0)}</span><span class="usage-cap">Cache read</span></div>
+          <div class="usage-cell"><span class="usage-num">${fmtTokens(stats.cacheCreateTokens || 0)}</span><span class="usage-cap">Cache write</span></div>
+        </div>
+        ${modelRows ? `<div class="session-group-label">BY MODEL</div>${modelRows}` : ""}
+        <div class="usage-since">since ${escape(since)}</div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+  const close = () => {
+    document.removeEventListener("keydown", onKey, true);
+    overlay.remove();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  overlay.querySelector(".paste-overlay-close")!.addEventListener("click", close);
+  overlay.querySelector(".usage-reset")!.addEventListener("click", async () => {
+    try {
+      await invoke("reset_usage");
+      showToast("Usage reset");
+    } catch (e) {
+      showToast("Reset failed: " + e);
+    }
+    close();
+  });
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
   });
 }
 

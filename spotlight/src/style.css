@@ -1,44 +1,74 @@
 /* ============================================================
-   Spotlight — Orange Liquid Glass
-   Apple Spotlight aesthetic, heavily frosted, warm amber tint.
-   Window vibrancy is applied via NSVisualEffectView (HudWindow);
-   everything below assumes the window backdrop is already blurred.
+   Spotlight — Neutral Editorial Liquid Glass
+   Off-white canvas, white frosted glass surfaces, charcoal ink,
+   slate-blue gradient accent. Window vibrancy is applied via
+   NSVisualEffectView (Sheet, light) in main.rs; everything below
+   assumes the window backdrop is already blurred and tints over it.
+
+   Mirrors the Figma board "Spotlight — Orange Liquid Glass"
+   (file P5vFz9LI4XHv0FeOClmbVK), which was reskinned to this
+   neutral/slate direction. Keep the two in sync.
    ============================================================ */
 :root {
-  /* Dark warm text on a warm cream background — high contrast, readable */
-  --fg: rgba(40, 22, 8, 0.96);
-  --fg-soft: rgba(55, 32, 14, 0.82);
-  --fg-muted: rgba(80, 50, 22, 0.62);
-  --fg-dim: rgba(100, 68, 35, 0.42);
+  /* Ink — charcoal on a light glass surface */
+  --fg: rgba(26, 23, 20, 0.96);
+  --fg-soft: rgba(35, 32, 32, 0.82);
+  --fg-muted: rgba(110, 106, 100, 0.78);
+  --fg-dim: rgba(110, 106, 100, 0.48);
+  --secondary: #6e6a64;
+  --graphite: #3a3631;
 
-  --accent: rgba(200, 95, 25, 1);
-  --accent-soft: rgba(210, 110, 40, 0.62);
-  --accent-glow: rgba(220, 120, 50, 0.30);
+  /* Slate-blue accent — used sparingly for CTAs, toggles, progress */
+  --accent: #44557a;
+  --accent-2: #93a4c2;
+  --accent-soft: rgba(68, 85, 122, 0.55);
+  --accent-glow: rgba(68, 85, 122, 0.20);
+  --accent-grad: linear-gradient(135deg, #44557a 0%, #93a4c2 100%);
+  --accent-grad-h: linear-gradient(90deg, #44557a 0%, #93a4c2 100%);
+  --accent-grad-btn: linear-gradient(180deg, #50628c 0%, #41527a 100%);
+  --accent-grad-btn-h: linear-gradient(180deg, #5a6d99 0%, #475985 100%);
 
-  /* Layered warm tints over the cream base */
-  --tint-soft: rgba(200, 110, 40, 0.06);
-  --tint: rgba(200, 100, 30, 0.10);
-  --tint-strong: rgba(200, 90, 20, 0.18);
-  --tint-deep: rgba(180, 70, 10, 0.28);
+  /* Neutral ink tints — pills, chips, buttons, hovers */
+  --tint-soft: rgba(26, 23, 20, 0.05);
+  --tint: rgba(26, 23, 20, 0.10);
+  --tint-strong: rgba(26, 23, 20, 0.16);
+  --tint-deep: rgba(26, 23, 20, 0.24);
 
+  /* Glass material */
+  --canvas: #eceae5;
+  --glass-grad: linear-gradient(
+    159deg,
+    rgba(252, 253, 255, 0.40) 0%,
+    rgba(235, 238, 244, 0.22) 71%
+  );
+  --glass-solid: rgba(244, 245, 247, 0.97);
+  --glass-border: rgba(255, 255, 255, 0.5);
   --glass-top: rgba(255, 255, 255, 0.55);
-  --glass-edge: rgba(160, 110, 60, 0.30);
-  --glass-inner: rgba(255, 235, 200, 0.30);
+  --glass-inner: rgba(255, 255, 255, 0.42);
+  --glass-inset: inset 0 -1px 1px 0 rgba(31, 33, 41, 0.06),
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.55);
+  --window-shadow: 0 2px 8px 0 rgba(26, 23, 20, 0.07);
+  --overlay-shadow: 0 10px 28px rgba(26, 23, 20, 0.18);
+  /* Frosted glass is now CSS-only (no native NSVisualEffectView), so the blur
+     does the heavy lifting — stronger than when vibrancy backed it. */
+  --blur: 24px;
 
-  --hairline: rgba(100, 60, 20, 0.12);
-  --hairline-strong: rgba(100, 60, 20, 0.22);
+  --hairline: rgba(26, 23, 20, 0.12);
+  --hairline-strong: rgba(26, 23, 20, 0.22);
 
-  --code-bg: rgba(60, 35, 12, 0.08);
+  --code-bg: rgba(26, 23, 20, 0.06);
 
-  --radius: 16px;
-  --radius-sm: 8px;
+  --radius: 8px;
+  --radius-sm: 4px;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
-    system-ui, sans-serif;
+    "Inter", system-ui, sans-serif;
+  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, "Roboto Mono",
+    Consolas, monospace;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* Kill default browser focus rings everywhere. The bar's own bg is the
+/* Kill default browser focus rings everywhere. The surface's own state is the
    focus signal — no gray browser outline needed. */
 *:focus,
 *:focus-visible,
@@ -60,16 +90,16 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-::selection { background: rgba(255, 165, 70, 0.35); color: var(--fg); }
+::selection { background: rgba(68, 85, 122, 0.22); color: var(--fg); }
 
 /* ============================================================
    The window shell — transparent so NSVisualEffectView shows
-   through. The orange "liquid glass" look is built up in layers:
-   1. radial warm glow at top center
-   2. soft diagonal sheen
-   3. inset highlight on top edge
-   4. amber-tinted hairline border
-   5. warm outer shadow
+   through. The neutral "liquid glass" look:
+   1. soft top-to-bottom cool-white gradient (the glass body)
+   2. light backdrop frost on top of the OS vibrancy
+   3. bright white rim border
+   4. inset highlight on top edge + faint inner bottom shade
+   5. native window drop shadow (from tauri.conf shadow:true)
    ============================================================ */
 #app {
   position: relative;
@@ -79,22 +109,25 @@ html, body {
   flex-direction: column;
   border-radius: var(--radius);
   overflow: hidden;
-  /* Translucent light-orange tint — Sheet vibrancy material does the heavy
-     lifting; this just adds a warm orange wash so desktop colors come
-     through with an amber cast (matches macOS Spotlight's behavior). */
-  background:
-    linear-gradient(180deg, rgba(255, 200, 130, 0.18) 0%, rgba(255, 180, 110, 0.14) 100%);
-  border: none;
-  /* No inner rim — just the macOS native window shadow (from
-     tauri.conf shadow:true) wrapping the rounded corners externally. */
-  box-shadow: none;
+  background: var(--glass-grad);
+  backdrop-filter: blur(var(--blur)) saturate(1.08);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.08);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-inset);
 }
 
-/* Sheen layer removed — was adding a diagonal highlight that read as a rim
-   against the flat cream background. */
 #app::before { content: none; }
-
 #app > * { position: relative; z-index: 1; }
+
+/* Promote the glass surfaces to their own compositing layer. WebKit keeps a
+   backdrop-filter's sampled backdrop far more stable on an explicitly-composited
+   layer; paired with requestGlassRepaint() in main.ts (which re-samples after a
+   resize), this keeps the blur from dropping out. */
+#app,
+#app.menu-float .bar,
+#app > #actions-menu,
+#app > #commands,
+#reply-app { transform: translateZ(0); }
 
 #app.appearing {
   animation: spotlight-appear 0.22s cubic-bezier(0.2, 0.9, 0.4, 1);
@@ -112,8 +145,8 @@ html, body {
    ============================================================ */
 .bar {
   flex: 0 0 auto;
-  min-height: 52px;
-  padding: 0 116px 0 16px;
+  min-height: 56px;
+  padding: 0 52px 0 20px;
   display: flex;
   align-items: stretch;
   -webkit-app-region: drag;
@@ -127,41 +160,39 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  margin-right: 10px;
-  color: var(--accent);
-  opacity: 0.9;
-  filter: drop-shadow(0 0 4px rgba(255, 150, 60, 0.28));
+  width: 20px;
+  margin-right: 12px;
+  color: var(--graphite);
+  opacity: 1;
   -webkit-app-region: drag;
-  transition: color 0.18s ease, filter 0.18s ease;
+  transition: color 0.18s ease;
 }
 body.daemon-down .bar-icon {
-  color: rgba(180, 35, 35, 0.95);
-  filter: drop-shadow(0 0 4px rgba(180, 35, 35, 0.35));
+  color: rgba(170, 45, 40, 0.95);
 }
 body.daemon-down #composer::placeholder {
-  color: rgba(170, 30, 30, 0.65);
+  color: rgba(170, 45, 40, 0.7);
 }
 
 .bar-actions {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  right: 10px;
+  right: 12px;
   display: flex;
-  gap: 2px;
+  gap: 4px;
   z-index: 10;
   -webkit-app-region: no-drag;
 }
 .bar-btn {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   border: none;
-  border-radius: 7px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -170,29 +201,12 @@ body.daemon-down #composer::placeholder {
 .bar-btn:hover {
   background: var(--tint);
   color: var(--fg);
-  box-shadow: inset 0 0 0 0.5px var(--hairline-strong);
 }
-#pin-btn.active {
-  color: var(--accent);
-  transform: rotate(-30deg);
-  background: var(--tint-strong);
-  box-shadow:
-    inset 0 0 0 0.5px rgba(255, 180, 100, 0.32),
-    0 0 8px var(--accent-glow);
+.actions-trigger.open {
+  color: #fff;
+  background: var(--accent-grad-btn);
 }
-#pin-btn.active:hover { background: var(--tint-deep); }
-#record-btn.active {
-  color: rgba(255, 90, 90, 0.95);
-  animation: record-pulse 1.4s ease-in-out infinite;
-  background: rgba(255, 90, 90, 0.12);
-}
-#record-btn.active:hover { background: rgba(255, 90, 90, 0.18); }
-#autoshot-btn.active {
-  color: var(--accent);
-  background: var(--tint);
-  box-shadow: inset 0 0 0 0.5px var(--hairline-strong);
-}
-#autoshot-btn.active:hover { background: var(--tint-strong); }
+.actions-trigger.open:hover { background: var(--accent-grad-btn-h); }
 @keyframes record-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -220,10 +234,7 @@ body.daemon-down #composer::placeholder {
      lands on the textarea (no-drag) and the user can't drag the window. */
   flex: 0 0 auto;
   /* Width is set dynamically by JS (sizeComposerWidth in main.ts) to match
-     the actual content width. Everything around the textarea is then
-     composer-wrap (drag-enabled) so the whole bar drags like the left side
-     already does. Start at a sensible minimum so the input is clickable
-     even before JS runs. */
+     the actual content width. */
   width: 140px;
   max-width: 100%;
   background: transparent;
@@ -232,17 +243,17 @@ body.daemon-down #composer::placeholder {
   padding: 0;
   margin: 0;
   font: inherit;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 400;
   line-height: 1.35;
   color: var(--fg);
   caret-color: var(--accent);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.005em;
   resize: none;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  min-height: 28px;
+  min-height: 26px;
   max-height: 180px;
   -webkit-app-region: no-drag;
   -webkit-appearance: none;
@@ -297,14 +308,14 @@ body.daemon-down #composer::placeholder {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: rgba(40, 18, 0, 0.62);
+  background: rgba(26, 23, 20, 0.62);
   color: #fff;
   font-size: 11px;
   cursor: default;
   user-select: none;
   backdrop-filter: blur(6px);
 }
-.thumb-x:hover { background: rgba(40, 18, 0, 0.85); }
+.thumb-x:hover { background: rgba(26, 23, 20, 0.85); }
 
 .reply-quote-chip {
   position: relative;
@@ -332,9 +343,9 @@ body.daemon-down #composer::placeholder {
   top: 8px;
   bottom: 8px;
   left: 6px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--accent-soft);
+  width: 3px;
+  border-radius: 2px;
+  background: var(--graphite);
 }
 .reply-quote-chip-x {
   position: absolute;
@@ -370,12 +381,12 @@ body.daemon-down #composer::placeholder {
 }
 .paste-chip:hover { background: var(--tint-strong); }
 .paste-chip-tag {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
   color: var(--accent);
-  background: rgba(255, 170, 80, 0.14);
+  background: rgba(68, 85, 122, 0.12);
   padding: 1px 5px;
   border-radius: 3px;
 }
@@ -395,7 +406,7 @@ body.daemon-down #composer::placeholder {
 
 .file-chip { cursor: default; max-width: 280px; }
 .file-chip-name {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 11px;
   color: var(--fg);
   overflow: hidden;
@@ -416,7 +427,7 @@ body.daemon-down #composer::placeholder {
 .settings-panel {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 14px 18px 16px;
+  padding: 16px 20px 18px;
   border-top: 1px solid var(--hairline);
   color: var(--fg);
   font-size: 13px;
@@ -424,18 +435,18 @@ body.daemon-down #composer::placeholder {
 .settings-panel.hidden { display: none; }
 .response.hidden { display: none; }
 .settings-header {
-  font-size: 11px;
+  font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   color: var(--fg-muted);
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
-.settings-section { margin-bottom: 14px; }
+.settings-section { margin-bottom: 16px; }
 .settings-section-title {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--fg-soft);
-  margin-bottom: 8px;
+  color: var(--fg);
+  margin-bottom: 10px;
 }
 .settings-row {
   display: flex;
@@ -448,12 +459,12 @@ body.daemon-down #composer::placeholder {
   flex: 0 0 200px;
   background: var(--tint-soft);
   border: 1px solid var(--hairline);
-  border-radius: 6px;
-  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
   color: var(--fg);
   font: inherit;
   font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   text-align: center;
   cursor: pointer;
   outline: none;
@@ -461,7 +472,7 @@ body.daemon-down #composer::placeholder {
 .hotkey-input:focus,
 .hotkey-input.recording {
   border-color: var(--accent-soft);
-  background: var(--tint-strong);
+  background: rgba(68, 85, 122, 0.08);
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 .hotkey-clear {
@@ -487,9 +498,9 @@ body.daemon-down #composer::placeholder {
 .settings-footer button {
   background: var(--tint);
   border: 1px solid var(--hairline-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg);
-  padding: 4px 12px;
+  padding: 5px 14px;
   font: inherit;
   font-size: 12px;
   cursor: pointer;
@@ -499,7 +510,7 @@ body.daemon-down #composer::placeholder {
 /* ------ Network (Host/Client) sections ------ */
 .net-section {
   border-top: 1px solid var(--hairline);
-  padding-top: 12px;
+  padding-top: 14px;
 }
 .net-head {
   display: flex;
@@ -517,29 +528,30 @@ body.daemon-down #composer::placeholder {
 .net-toggle input { display: none; }
 .net-toggle-track {
   position: relative;
-  width: 30px;
-  height: 18px;
-  background: var(--tint-soft);
+  width: 40px;
+  height: 24px;
+  background: var(--tint);
   border: 1px solid var(--hairline);
-  border-radius: 9px;
-  transition: background 120ms;
+  border-radius: 12px;
+  transition: background 140ms, border-color 140ms;
 }
 .net-toggle-thumb {
   position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 14px;
-  height: 14px;
-  background: var(--fg);
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
   border-radius: 50%;
-  transition: transform 140ms, background 140ms;
+  box-shadow: 0 1px 2px rgba(26, 23, 20, 0.25);
+  transition: transform 160ms cubic-bezier(0.3, 0.9, 0.4, 1);
 }
 .net-toggle input:checked + .net-toggle-track {
-  background: var(--accent-soft, #5b8def);
-  border-color: var(--accent-soft, #5b8def);
+  background: var(--accent-grad-h);
+  border-color: transparent;
 }
 .net-toggle input:checked + .net-toggle-track .net-toggle-thumb {
-  transform: translateX(12px);
+  transform: translateX(16px);
   background: #fff;
 }
 .net-toggle-label {
@@ -556,8 +568,8 @@ body.daemon-down #composer::placeholder {
   flex: 1 1 auto;
   background: var(--tint-soft);
   border: 1px solid var(--hairline);
-  border-radius: 6px;
-  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
   color: var(--fg);
   font: inherit;
   font-size: 12px;
@@ -568,9 +580,7 @@ body.daemon-down #composer::placeholder {
   border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
-.net-input-mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
+.net-input-mono { font-family: var(--mono); }
 .net-input-short {
   flex: 0 0 110px;
   text-align: center;
@@ -578,9 +588,9 @@ body.daemon-down #composer::placeholder {
 .net-btn {
   background: var(--tint);
   border: 1px solid var(--hairline-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg);
-  padding: 2px 8px;
+  padding: 3px 8px;
   font: inherit;
   font-size: 12px;
   cursor: pointer;
@@ -591,10 +601,10 @@ body.daemon-down #composer::placeholder {
   margin-top: 6px;
   font-size: 11px;
   color: var(--fg-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
 }
-.net-status.ok { color: #4caf50; }
-.net-status.warn { color: #d97706; }
+.net-status.ok { color: #3f7d4e; }
+.net-status.warn { color: #b06a18; }
 .net-share-row.hidden { display: none; }
 
 /* ============================================================
@@ -629,7 +639,7 @@ body.daemon-down #composer::placeholder {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px 22px 16px;
+  padding: 14px 20px 18px;
   font-size: 14.5px;
   line-height: 1.55;
   font-weight: 400;
@@ -663,16 +673,16 @@ body.daemon-down #composer::placeholder {
   background: var(--code-bg);
   padding: 1px 5px;
   border-radius: 4px;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 12.5px;
-  color: rgba(60, 30, 8, 0.95);
+  color: var(--fg);
 }
 .response pre {
   position: relative;
   background: var(--code-bg);
   border: 1px solid var(--hairline);
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: var(--radius);
   overflow-x: auto;
   margin: 8px 0;
   font-size: 12.5px;
@@ -689,7 +699,7 @@ body.daemon-down #composer::placeholder {
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.6);
   color: var(--fg);
   border: 1px solid var(--hairline-strong);
   border-radius: 5px;
@@ -701,10 +711,10 @@ body.daemon-down #composer::placeholder {
   user-select: none;
 }
 .response pre:hover .code-copy { opacity: 1; }
-.code-copy:hover { background: rgba(255, 255, 255, 0.85); }
+.code-copy:hover { background: rgba(255, 255, 255, 0.9); }
 .code-copy.copied {
-  background: rgba(255, 170, 80, 0.35);
-  color: rgba(70, 35, 8, 0.95);
+  background: rgba(68, 85, 122, 0.18);
+  color: var(--accent);
   opacity: 1;
 }
 .response pre code { background: transparent; padding: 0; color: var(--fg); }
@@ -716,14 +726,14 @@ body.daemon-down #composer::placeholder {
 .response strong { font-weight: 700; color: var(--fg); }
 .response hr { border: none; border-top: 1px solid var(--hairline); margin: 10px 0; }
 .response blockquote {
-  border-left: 2px solid var(--accent-soft);
+  border-left: 3px solid var(--graphite);
   padding-left: 10px;
   color: var(--fg-soft);
   margin: 6px 0;
 }
 
 .error {
-  color: rgba(170, 30, 30, 0.95);
+  color: rgba(170, 45, 40, 0.95);
   font-weight: 500;
 }
 .stream-note {
@@ -743,7 +753,7 @@ body.daemon-down #composer::placeholder {
   color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
-  border-left: 2px solid var(--accent-soft);
+  border-left: 3px solid var(--graphite);
 }
 .inline-injection::before {
   content: "↳";
@@ -757,24 +767,32 @@ body.daemon-down #composer::placeholder {
 .inline-injection-imgs,
 .inline-injection-pastes {
   margin-left: 18px;
-  border-left: 2px solid var(--accent-soft);
+  border-left: 3px solid var(--graphite);
   padding-left: 8px;
 }
 
 /* ============================================================
    Slash-command palette
    ============================================================ */
-.commands {
+/* Selector scoped to `#app > #commands` (specificity 2,0,0) so it overrides
+   `#app > *` (1,0,0), which would otherwise flatten this overlay to
+   position:relative / z-index:1. */
+#app > #commands {
   position: absolute;
-  top: 48px;
+  top: 56px;
   left: 0;
   right: 0;
   z-index: 10;
   padding: 6px 8px 8px;
   border-top: 1px solid var(--hairline);
-  background:
-    radial-gradient(120% 80% at 50% 0%, rgba(255, 170, 80, 0.10), transparent 70%),
-    linear-gradient(180deg, rgba(255, 150, 60, 0.06), rgba(255, 110, 30, 0.04));
+  /* Opaque light-glass base so the chat response behind the dropdown is fully
+     occluded. background-color is the hard opaque floor; it must come AFTER the
+     shorthand, which would otherwise reset background-color to transparent. */
+  background: var(--glass-grad);
+  background-color: var(--glass-solid);
+  backdrop-filter: blur(var(--blur)) saturate(1.08);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.08);
+  box-shadow: var(--overlay-shadow);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -793,13 +811,12 @@ body.daemon-down #composer::placeholder {
 }
 .cmd.selected {
   background: var(--tint-strong);
-  box-shadow: inset 0 0 0 0.5px var(--hairline-strong);
 }
 .cmd-name {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--graphite);
   min-width: 80px;
 }
 .cmd-desc {
@@ -812,13 +829,13 @@ body.daemon-down #composer::placeholder {
    Streaming progress + tool chips
    ============================================================ */
 .status-line {
-  height: 1.5px;
+  height: 3px;
   background: transparent;
   position: relative;
   overflow: hidden;
   flex: 0 0 auto;
 }
-.status-line.active { background: rgba(255, 170, 80, 0.10); }
+.status-line.active { background: var(--tint); }
 .status-line.active::after {
   content: "";
   position: absolute;
@@ -826,7 +843,7 @@ body.daemon-down #composer::placeholder {
   left: -35%;
   width: 35%;
   height: 100%;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background: var(--accent-grad-h);
   animation: slide 1.5s ease-in-out infinite;
 }
 @keyframes slide { 0% { left: -35%; } 100% { left: 100%; } }
@@ -838,8 +855,8 @@ body.daemon-down #composer::placeholder {
   padding: 4px 10px;
   background: var(--tint);
   border: 1px solid var(--hairline-strong);
-  border-radius: 7px;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
   font-size: 12px;
   font-weight: 500;
   color: var(--fg);
@@ -859,8 +876,8 @@ body.daemon-down #composer::placeholder {
   60% { transform: scale(1.04); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
 }
-.tool-arrow { opacity: 0.6; font-size: 11px; color: var(--accent); }
-.tool-name { letter-spacing: 0.01em; font-weight: 600; color: var(--accent); }
+.tool-arrow { opacity: 0.7; font-size: 11px; color: var(--accent); }
+.tool-name { letter-spacing: 0.01em; font-weight: 600; color: var(--graphite); }
 .tool-sep { opacity: 0.4; padding: 0 2px; }
 .tool-label {
   color: var(--fg-soft);
@@ -883,9 +900,9 @@ body.daemon-down #composer::placeholder {
 
 .user-query {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--accent);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   margin: 0 0 8px;
   user-select: text;
@@ -921,7 +938,7 @@ body.daemon-down #composer::placeholder {
 .history-paste {
   background: var(--tint-soft);
   border: 1px solid var(--hairline);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 4px 8px;
 }
 .history-paste summary {
@@ -934,11 +951,11 @@ body.daemon-down #composer::placeholder {
 }
 .history-paste summary::-webkit-details-marker { display: none; }
 .paste-tag {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  background: rgba(255, 170, 80, 0.14);
+  background: rgba(68, 85, 122, 0.12);
   color: var(--accent);
   padding: 1px 5px;
   border-radius: 3px;
@@ -947,7 +964,7 @@ body.daemon-down #composer::placeholder {
 .paste-body {
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 12px;
   margin-top: 6px;
   max-height: 280px;
@@ -961,9 +978,9 @@ body.daemon-down #composer::placeholder {
 .turn-actions { display: none; }
 
 .quote-highlight {
-  background: rgba(255, 170, 80, 0.32);
+  background: rgba(68, 85, 122, 0.18);
   border-radius: 2px;
-  box-shadow: 0 0 0 1px rgba(255, 170, 80, 0.22);
+  box-shadow: 0 0 0 1px rgba(68, 85, 122, 0.22);
 }
 
 .sel-popover {
@@ -972,16 +989,17 @@ body.daemon-down #composer::placeholder {
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: rgba(255, 240, 220, 0.96);
+  background: var(--glass-solid);
   border: 1px solid var(--hairline-strong);
-  border-radius: 10px;
+  border-radius: var(--radius);
   box-shadow:
     inset 0 1px 0 var(--glass-top),
-    0 8px 24px rgba(60, 30, 0, 0.32);
+    var(--overlay-shadow);
   -webkit-app-region: no-drag;
   transform: translate(-50%, -100%);
   margin-top: -8px;
-  backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
 }
 .sel-popover.hidden { display: none; }
 .sel-popover button {
@@ -1013,24 +1031,15 @@ body.reply-window {
   flex-direction: column;
   border-radius: var(--radius);
   overflow: hidden;
-  border: none;
-  background:
-    linear-gradient(180deg, rgba(255, 200, 130, 0.18) 0%, rgba(255, 180, 110, 0.14) 100%);
-  box-shadow: none;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-grad);
+  backdrop-filter: blur(var(--blur)) saturate(1.08);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.08);
+  box-shadow: var(--glass-inset);
   transform-origin: top center;
   animation: reply-appear 0.22s cubic-bezier(0.2, 0.9, 0.4, 1);
 }
-#reply-app::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  background:
-    linear-gradient(135deg, rgba(255, 240, 215, 0.08) 0%, transparent 35%),
-    linear-gradient(315deg, rgba(255, 130, 50, 0.06) 0%, transparent 40%);
-  z-index: 0;
-}
+#reply-app::before { content: none; }
 #reply-app > * { position: relative; z-index: 1; }
 @keyframes reply-appear {
   from { opacity: 0; transform: translateY(-4px); filter: blur(2px); }
@@ -1047,14 +1056,14 @@ body.reply-window {
 }
 .reply-header * { -webkit-app-region: no-drag; }
 .reply-mode-tag {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  background: rgba(255, 170, 80, 0.16);
+  background: var(--tint);
   color: var(--accent);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .reply-quote {
   flex: 1;
@@ -1086,10 +1095,10 @@ body.reply-window {
 }
 .reply-user {
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--accent);
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   margin-bottom: 6px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1101,7 +1110,7 @@ body.reply-window {
   background: var(--code-bg);
   border: 1px solid var(--hairline);
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1110,10 +1119,10 @@ body.reply-window {
   background: var(--code-bg);
   padding: 1px 4px;
   border-radius: 3px;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 12px;
 }
-.reply-resp .error { color: rgba(170, 30, 30, 0.95); }
+.reply-resp .error { color: rgba(170, 45, 40, 0.95); }
 
 #reply-composer {
   flex: 0 0 auto;
@@ -1152,16 +1161,16 @@ body.reply-window {
   padding: 8px 10px;
   background: var(--tint-soft);
   border: 1px solid var(--hairline);
-  border-radius: 10px;
+  border-radius: var(--radius);
 }
 .reply-composer.reply-side {
-  background: linear-gradient(180deg, rgba(255, 170, 80, 0.12), rgba(255, 130, 50, 0.05));
-  border-color: rgba(255, 170, 80, 0.28);
+  background: rgba(68, 85, 122, 0.08);
+  border-color: var(--accent-soft);
 }
 .reply-head {
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--accent);
   margin-bottom: 4px;
@@ -1198,22 +1207,121 @@ body.reply-window {
   cursor: default;
 }
 .reply-actions .reply-send {
-  background: linear-gradient(180deg, rgba(255, 170, 80, 0.35), rgba(255, 130, 50, 0.25));
-  border-color: rgba(255, 170, 80, 0.45);
-  color: rgba(40, 18, 0, 0.95);
+  background: var(--accent-grad-btn);
+  border-color: transparent;
+  color: #fff;
   font-weight: 600;
 }
 .reply-actions button:hover { background: var(--tint-strong); }
-.reply-actions .reply-send:hover {
-  background: linear-gradient(180deg, rgba(255, 180, 100, 0.45), rgba(255, 140, 60, 0.35));
+.reply-actions .reply-send:hover { background: var(--accent-grad-btn-h); }
+
+/* AskUserQuestion picker — interactive card the model parks on until answered */
+.question-card {
+  margin: 10px 0 6px;
+  padding: 12px 14px;
+  background: rgba(68, 85, 122, 0.07);
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--radius);
 }
+.question-card.answered { opacity: 0.6; }
+.question-block + .question-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+.question-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.question-chip {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--tint);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.question-text {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.35;
+}
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  width: 100%;
+  font-family: var(--font);
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--hairline-strong);
+  background: var(--tint-soft);
+  color: var(--fg);
+  cursor: default;
+  transition: background 0.12s, border-color 0.12s;
+}
+.question-option:hover { background: var(--tint); }
+.question-option.selected {
+  background: rgba(68, 85, 122, 0.14);
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.question-option .opt-label { font-size: 13px; font-weight: 600; }
+.question-option .opt-desc { font-size: 11.5px; color: var(--fg-muted); line-height: 1.3; }
+.question-other { opacity: 0.85; }
+.question-other-input {
+  margin-top: 6px;
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 9px;
+  border-radius: var(--radius);
+  border: 1px solid var(--hairline-strong);
+  background: var(--glass-inner);
+  color: var(--fg);
+  outline: none;
+  caret-color: var(--accent);
+}
+.question-other-input.hidden { display: none; }
+.question-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.question-submit {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: var(--accent-grad-btn);
+  color: #fff;
+  cursor: default;
+}
+.question-submit:hover:not(:disabled) { background: var(--accent-grad-btn-h); }
+.question-submit:disabled { opacity: 0.4; }
 
 .turn.turn-side {
   margin: 10px 0 4px 24px;
   padding: 10px 12px;
-  background: linear-gradient(180deg, rgba(255, 170, 80, 0.08), rgba(255, 130, 50, 0.04));
-  border: 1px solid rgba(255, 170, 80, 0.22);
-  border-radius: 12px;
+  background: rgba(68, 85, 122, 0.06);
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--radius);
   border-top: none;
 }
 .turn.turn-side::before {
@@ -1260,25 +1368,26 @@ body.reply-window {
   right: 18px;
   font-size: 12px;
   color: var(--fg);
-  background: rgba(255, 240, 220, 0.96);
+  background: var(--glass-solid);
   border: 1px solid var(--hairline-strong);
   padding: 6px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   opacity: 0;
   transition: opacity 0.18s ease;
   pointer-events: none;
   z-index: 50;
   backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   box-shadow:
     inset 0 1px 0 var(--glass-top),
-    0 4px 12px rgba(60, 30, 0, 0.20);
+    var(--overlay-shadow);
 }
 .toast.show { opacity: 1; }
 
 .paste-overlay {
   position: fixed;
   inset: 0;
-  background: transparent;
+  background: rgba(26, 23, 20, 0.10);
   z-index: 100;
   display: grid;
   place-items: center;
@@ -1287,18 +1396,17 @@ body.reply-window {
 .paste-overlay-card {
   width: min(560px, 92vw);
   max-height: 80vh;
-  background:
-    radial-gradient(120% 80% at 50% -10%, rgba(255, 200, 140, 0.45), transparent 65%),
-    rgba(255, 240, 220, 0.96);
-  border: 1px solid var(--glass-edge);
-  border-radius: 14px;
+  background: var(--glass-solid);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  backdrop-filter: blur(28px) saturate(1.4);
+  backdrop-filter: blur(28px) saturate(1.2);
+  -webkit-backdrop-filter: blur(28px) saturate(1.2);
   box-shadow:
     inset 0 1px 0 var(--glass-top),
-    0 24px 60px rgba(60, 30, 0, 0.45);
+    0 24px 60px rgba(26, 23, 20, 0.30);
 }
 .paste-overlay-head {
   display: flex;
@@ -1324,13 +1432,13 @@ body.reply-window {
 .paste-overlay-close:hover { background: var(--tint); color: var(--fg); }
 .paste-overlay-text {
   flex: 1;
-  background: rgba(255, 200, 140, 0.03);
+  background: var(--tint-soft);
   border: none;
   outline: none;
   resize: none;
   color: var(--fg);
   padding: 12px 14px;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.5;
   min-height: 240px;
@@ -1346,17 +1454,15 @@ body.reply-window {
 .paste-overlay-save {
   font: inherit;
   font-size: 12px;
-  background: linear-gradient(180deg, rgba(255, 170, 80, 0.35), rgba(255, 130, 50, 0.25));
-  color: rgba(40, 18, 0, 0.95);
-  border: 1px solid rgba(255, 170, 80, 0.45);
+  background: var(--accent-grad-btn);
+  color: #fff;
+  border: 1px solid transparent;
   border-radius: 7px;
   padding: 5px 14px;
   font-weight: 600;
   cursor: default;
 }
-.paste-overlay-save:hover {
-  background: linear-gradient(180deg, rgba(255, 180, 100, 0.45), rgba(255, 140, 60, 0.35));
-}
+.paste-overlay-save:hover { background: var(--accent-grad-btn-h); }
 
 .session-picker .session-list {
   overflow-y: auto;
@@ -1365,7 +1471,7 @@ body.reply-window {
 }
 .session-row {
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   cursor: default;
 }
 .session-row:hover { background: var(--tint); }
@@ -1380,4 +1486,305 @@ body.reply-window {
 .session-meta {
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* ============================================================
+   Sessions button badge + multi-session panel
+   ============================================================ */
+/* ---- Actions kebab trigger badge ---- */
+.actions-trigger { position: relative; }
+.kebab-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 7px;
+  box-shadow: 0 0 0 1.5px rgba(252, 253, 255, 0.9);
+}
+#actions-btn.multi .kebab-badge { display: flex; }
+#actions-btn.streaming { color: #fff; background: var(--accent-grad-btn); }
+#actions-btn.streaming .kebab-badge {
+  animation: record-pulse 1.4s ease-in-out infinite;
+}
+
+/* ---- Actions dropdown menu ---- */
+/* Scoped to #app > #actions-menu (specificity 2,0,0) so it overrides
+   #app > * (1,0,0) which would otherwise flatten it into flow. */
+#app > #actions-menu {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  z-index: 20;
+  width: 208px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: var(--radius);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-grad);
+  background-color: var(--glass-solid);
+  backdrop-filter: blur(var(--blur)) saturate(1.08);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.08);
+  box-shadow: var(--glass-inset), var(--overlay-shadow);
+}
+#app > #actions-menu.hidden { display: none; }
+
+/* Idle float mode — when the menu opens over an empty bar, the window grows to
+   fit the dropdown but the bar must stay bar-sized. Make #app transparent and
+   move the glass onto the bar itself, so only the bar pill + the floating
+   dropdown show, with transparent desktop around them. */
+#app.menu-float {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+#app.menu-float .bar {
+  background: var(--glass-grad);
+  backdrop-filter: blur(var(--blur)) saturate(1.08);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.08);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--glass-inset);
+}
+
+.actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: default;
+  transition: background 0.12s, color 0.12s;
+}
+.actions-row:hover { background: var(--tint); }
+.actions-ico {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  color: var(--graphite);
+  transition: color 0.12s;
+}
+.actions-lbl { flex: 1 1 auto; text-align: left; }
+.row-badge {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 17px;
+  padding: 0 6px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 9px;
+}
+.row-badge:empty { display: none; }
+
+/* Active toggle states inside the menu */
+#autoshot-btn.active,
+#pin-btn.active { background: rgba(68, 85, 122, 0.10); }
+#autoshot-btn.active .actions-ico,
+#pin-btn.active .actions-ico { color: var(--accent); }
+#autoshot-btn.active .actions-lbl,
+#pin-btn.active .actions-lbl { color: var(--accent); font-weight: 600; }
+#record-btn.active .actions-ico {
+  color: rgba(210, 60, 60, 0.95);
+  animation: record-pulse 1.4s ease-in-out infinite;
+}
+#record-btn.active .actions-lbl {
+  color: rgba(210, 60, 60, 0.95);
+  font-weight: 600;
+}
+#sessions-btn.streaming .actions-ico { color: var(--accent); }
+
+.session-picker .paste-overlay-head { gap: 8px; }
+.ws-new {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: auto;
+  background: var(--tint);
+  border: 1px solid var(--hairline-strong);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: default;
+}
+.ws-new:hover { background: var(--tint-strong); }
+
+.session-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  padding: 8px 12px 4px;
+}
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ws-row.ws-active { background: var(--tint); }
+.ws-row .session-preview { flex: 1; margin-bottom: 0; }
+.ws-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+}
+.ws-dot.streaming { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.ws-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: default;
+}
+.ws-close:hover { background: var(--tint-strong); color: var(--fg); }
+
+/* ============================================================
+   /model picker
+   ============================================================ */
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.model-row.ws-active { background: var(--tint); }
+.model-check {
+  flex: 0 0 16px;
+  width: 16px;
+  text-align: center;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+}
+.model-text { flex: 1; min-width: 0; }
+.model-text .session-preview { margin-bottom: 1px; }
+
+/* ============================================================
+   /usage panel
+   ============================================================ */
+.usage-body {
+  overflow-y: auto;
+  max-height: 64vh;
+  padding: 4px 6px 8px;
+}
+.usage-reset {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: auto;
+  background: var(--tint);
+  border: 1px solid var(--hairline-strong);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: default;
+}
+.usage-reset:hover { background: var(--tint-strong); }
+.usage-hero {
+  text-align: center;
+  padding: 14px 0 12px;
+}
+.usage-cost {
+  font-size: 34px;
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: -0.02em;
+}
+.usage-cost-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+.usage-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 0 6px;
+}
+.usage-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 6px;
+  background: var(--tint-soft);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+.usage-num {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--fg);
+  font-family: var(--mono);
+}
+.usage-cap {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.usage-model-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 1.6fr 0.8fr;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+}
+.usage-model-row:hover { background: var(--tint); }
+.usage-model-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-model-stat { color: var(--fg-muted); }
+.usage-model-row .usage-model-stat:last-child {
+  text-align: right;
+  color: var(--fg);
+  font-weight: 600;
+}
+.usage-since {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  text-align: center;
+  padding: 12px 0 2px;
 }

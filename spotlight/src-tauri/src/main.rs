@@ -2,6 +2,7 @@
 
 use base64::{engine::general_purpose, Engine as _};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
@@ -28,21 +29,30 @@ fn capture_child() -> &'static Mutex<Option<(Child, String)>> {
     CAPTURE_CHILD.get_or_init(|| Mutex::new(None))
 }
 
-/// Write half of the socket connection that owns the current in-flight query.
-/// cancel_query / interrupt_query write control messages here so the daemon
-/// receives them on the same connection it associates with the live query.
-static ACTIVE_WRITER: OnceLock<Mutex<Option<AgentStream>>> = OnceLock::new();
-fn active_writer() -> &'static Mutex<Option<AgentStream>> {
-    ACTIVE_WRITER.get_or_init(|| Mutex::new(None))
+/// Write half of each tab's in-flight query connection, keyed by tab_id.
+/// cancel_query / interrupt_query write control messages to the matching
+/// tab's connection so the daemon stops the right claude child. Keying by
+/// tab_id (rather than a single global slot) is what lets parallel tabs each
+/// be cancelled/interrupted independently without clobbering one another.
+static ACTIVE_WRITERS: OnceLock<Mutex<HashMap<String, AgentStream>>> = OnceLock::new();
+fn active_writers() -> &'static Mutex<HashMap<String, AgentStream>> {
+    ACTIVE_WRITERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
-fn set_active_writer(s: Option<AgentStream>) {
-    if let Ok(mut g) = active_writer().lock() {
-        *g = s;
+fn set_active_writer(tab: &str, s: Option<AgentStream>) {
+    if let Ok(mut g) = active_writers().lock() {
+        match s {
+            Some(stream) => {
+                g.insert(tab.to_string(), stream);
+            }
+            None => {
+                g.remove(tab);
+            }
+        }
     }
 }
-fn write_control(json: &serde_json::Value) -> Result<(), String> {
-    let guard = active_writer().lock().map_err(|e| e.to_string())?;
-    let s = guard.as_ref().ok_or("no active query")?;
+fn write_control(tab: &str, json: &serde_json::Value) -> Result<(), String> {
+    let guard = active_writers().lock().map_err(|e| e.to_string())?;
+    let s = guard.get(tab).ok_or("no active query")?;
     let mut s = s.try_clone().map_err(|e| e.to_string())?;
     writeln!(s, "{}", json).map_err(|e| e.to_string())?;
     Ok(())
@@ -229,6 +239,13 @@ fn read_line_raw(s: &mut TcpStream, max: usize) -> std::io::Result<String> {
 }
 
 fn handle_host_conn(mut tcp: TcpStream, expected_token: &str) -> Result<(), String> {
+    // On macOS a socket accept()-ed from a non-blocking listener inherits the
+    // non-blocking flag, so reads return EAGAIN (os error 35) when the peer's
+    // bytes haven't landed yet. Put it back into blocking mode so the auth read
+    // (and the bridge below) wait for data as intended; set_read_timeout only
+    // takes effect on a blocking socket.
+    tcp.set_nonblocking(false)
+        .map_err(|e| format!("set_nonblocking(false): {}", e))?;
     // Limit the handshake to a few seconds so a stalled peer doesn't pin a
     // thread forever. Cleared once we move into bridge mode.
     let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
@@ -373,13 +390,19 @@ enum StreamEvent {
     Chunk { text: String },
     Tool { name: String, label: String },
     SessionId { id: String },
+    Question { request_id: String, questions: serde_json::Value },
     Done { response: String },
     Error { message: String },
     Cancelled,
 }
 
 #[tauri::command]
-async fn send_query(query: String, on_event: Channel<StreamEvent>) -> Result<(), String> {
+async fn send_query(
+    query: String,
+    tab_id: Option<String>,
+    on_event: Channel<StreamEvent>,
+) -> Result<(), String> {
+    let tab = tab_id.unwrap_or_else(|| "default".to_string());
     std::thread::spawn(move || {
         let stream = match connect_agent() {
             Ok(s) => s,
@@ -389,16 +412,16 @@ async fn send_query(query: String, on_event: Channel<StreamEvent>) -> Result<(),
             }
         };
 
-        // Park a clone for cancel/interrupt to write to.
+        // Park a clone for this tab's cancel/interrupt to write to.
         if let Ok(w) = stream.try_clone() {
-            set_active_writer(Some(w));
+            set_active_writer(&tab, Some(w));
         }
 
         let mut writer = stream.try_clone().expect("clone socket");
-        let req = serde_json::json!({ "query": query });
+        let req = serde_json::json!({ "query": query, "tab_id": tab });
         if let Err(e) = writeln!(writer, "{}", req) {
             let _ = on_event.send(StreamEvent::Error { message: format!("write failed: {}", e) });
-            set_active_writer(None);
+            set_active_writer(&tab, None);
             return;
         }
         // keep `writer` alive — interrupt may need to write on the same fd
@@ -411,7 +434,7 @@ async fn send_query(query: String, on_event: Channel<StreamEvent>) -> Result<(),
                 Ok(l) => l,
                 Err(e) => {
                     let _ = on_event.send(StreamEvent::Error { message: format!("read failed: {}", e) });
-                    set_active_writer(None);
+                    set_active_writer(&tab, None);
                     return;
                 }
             };
@@ -425,16 +448,27 @@ async fn send_query(query: String, on_event: Channel<StreamEvent>) -> Result<(),
 
             if v.get("cancelled").and_then(|c| c.as_bool()).unwrap_or(false) {
                 let _ = on_event.send(StreamEvent::Cancelled);
-                set_active_writer(None);
+                set_active_writer(&tab, None);
                 return;
             }
             if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
                 let _ = on_event.send(StreamEvent::Error { message: err.to_string() });
-                set_active_writer(None);
+                set_active_writer(&tab, None);
                 return;
             }
             if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
                 let _ = on_event.send(StreamEvent::SessionId { id: sid.to_string() });
+            }
+            // AskUserQuestion: the daemon parks the turn until we answer. Surface
+            // the prompt; the reply goes back via send_answer on this same tab's
+            // parked writer, and the daemon then resumes streaming on this conn.
+            if let Some(q) = v.get("question") {
+                if let Some(rid) = q.get("request_id").and_then(|r| r.as_str()) {
+                    let _ = on_event.send(StreamEvent::Question {
+                        request_id: rid.to_string(),
+                        questions: q.get("questions").cloned().unwrap_or(serde_json::Value::Null),
+                    });
+                }
             }
             if let Some(tool) = v.get("tool").and_then(|t| t.as_str()) {
                 let label = v
@@ -460,47 +494,134 @@ async fn send_query(query: String, on_event: Channel<StreamEvent>) -> Result<(),
                     .unwrap_or(collected.as_str())
                     .to_string();
                 let _ = on_event.send(StreamEvent::Done { response });
-                set_active_writer(None);
+                set_active_writer(&tab, None);
                 return;
             }
         }
 
         let _ = on_event.send(StreamEvent::Done { response: collected });
-        set_active_writer(None);
+        set_active_writer(&tab, None);
     });
 
     Ok(())
 }
 
 #[tauri::command]
-async fn cancel_query() -> Result<(), String> {
-    write_control(&serde_json::json!({ "cancel": true }))
+async fn cancel_query(tab_id: Option<String>) -> Result<(), String> {
+    let tab = tab_id.unwrap_or_else(|| "default".to_string());
+    write_control(&tab, &serde_json::json!({ "cancel": true, "tab_id": tab }))
 }
 
-/// Tell the daemon to use --resume <uuid> on the next query so claude
-/// reattaches to a specific prior session. Used by spotlight when restoring
-/// a saved session that has a captured claudeSessionId.
+/// Answer an AskUserQuestion prompt. Writes {answer:{request_id,answers}} on the
+/// tab's parked writer (the live send_query connection), which resolves the
+/// daemon's canUseTool promise so the turn continues. `answers` is keyed by the
+/// exact question text -> chosen option label(s).
 #[tauri::command]
-async fn resume_session(uuid: String) -> Result<(), String> {
+async fn send_answer(
+    request_id: String,
+    answers: serde_json::Value,
+    tab_id: Option<String>,
+) -> Result<(), String> {
+    let tab = tab_id.unwrap_or_else(|| "default".to_string());
+    write_control(
+        &tab,
+        &serde_json::json!({ "answer": { "request_id": request_id, "answers": answers }, "tab_id": tab }),
+    )
+}
+
+/// Tell the daemon to use --resume <uuid> on the next query for this tab so
+/// claude reattaches to a specific prior session. Used by spotlight when
+/// restoring a saved session that has a captured claudeSessionId.
+#[tauri::command]
+async fn resume_session(uuid: String, tab_id: Option<String>) -> Result<(), String> {
+    let tab = tab_id.unwrap_or_else(|| "default".to_string());
     let mut s = connect_agent()?;
-    writeln!(s, "{}", serde_json::json!({ "resume": uuid })).map_err(|e| e.to_string())?;
+    writeln!(s, "{}", serde_json::json!({ "resume": uuid, "tab_id": tab }))
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Tell the daemon to drop --continue on the next query so claude starts a
-/// brand-new session. Used on /clear and on app launch.
+/// Tell the daemon to drop --resume on the next query for this tab so claude
+/// starts a brand-new session. Used on /clear, app launch, and new tabs.
 #[tauri::command]
-async fn start_fresh_session() -> Result<(), String> {
-    // One-shot socket connection — the daemon stores the flag globally, so
-    // we don't need to reuse the active query's connection.
+async fn start_fresh_session(tab_id: Option<String>) -> Result<(), String> {
+    let tab = tab_id.unwrap_or_else(|| "default".to_string());
+    // One-shot socket connection — the daemon records the flag per tab, so we
+    // don't need to reuse the active query's connection.
     let mut s = connect_agent()?;
-    writeln!(s, "{}", serde_json::json!({ "fresh": true })).map_err(|e| e.to_string())?;
+    writeln!(s, "{}", serde_json::json!({ "fresh": true, "tab_id": tab }))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Set the model the daemon passes to the claude CLI (--model). An empty
+/// string resets to the CLI default. Applies globally to every tab's next
+/// query. Mirrors the claude CLI's /model command.
+#[tauri::command]
+async fn set_model(model: String) -> Result<(), String> {
+    let mut s = connect_agent()?;
+    writeln!(s, "{}", serde_json::json!({ "set_model": model }))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Fetch the daemon's rolling usage counters (cost + tokens since it started).
+/// Returns the raw `usage_stats` JSON object as a string for the frontend to
+/// parse and render. Mirrors the claude CLI's /usage command.
+#[tauri::command]
+async fn get_usage() -> Result<String, String> {
+    let mut s = connect_agent()?;
+    writeln!(s, "{}", serde_json::json!({ "usage": true })).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(s);
+    let mut line = String::new();
+    reader.read_line(&mut line).map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(line.trim()).map_err(|e| e.to_string())?;
+    v.get("usage_stats")
+        .map(|x| x.to_string())
+        .ok_or_else(|| "daemon did not return usage stats".to_string())
+}
+
+/// Zero the daemon's rolling usage counters.
+#[tauri::command]
+async fn reset_usage() -> Result<(), String> {
+    let mut s = connect_agent()?;
+    writeln!(s, "{}", serde_json::json!({ "reset_usage": true }))
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-async fn interrupt_query(query: String) -> Result<(), String> {
-    write_control(&serde_json::json!({ "query": query, "interrupt": true }))
+async fn interrupt_query(query: String, tab_id: Option<String>) -> Result<(), String> {
+    let tab = tab_id.unwrap_or_else(|| "default".to_string());
+    write_control(
+        &tab,
+        &serde_json::json!({ "query": query, "interrupt": true, "tab_id": tab }),
+    )
+}
+
+/// Ask the daemon to allocate a new tab id. Returns the id string.
+#[tauri::command]
+async fn new_tab() -> Result<String, String> {
+    let mut s = connect_agent()?;
+    writeln!(s, "{}", serde_json::json!({ "new_tab": true })).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(s);
+    let mut line = String::new();
+    reader.read_line(&mut line).map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(line.trim()).map_err(|e| e.to_string())?;
+    v.get("new_tab_id")
+        .and_then(|x| x.as_str())
+        .map(|x| x.to_string())
+        .ok_or_else(|| "daemon did not return a tab id".to_string())
+}
+
+/// Tell the daemon to kill any in-flight child for this tab and drop its state.
+#[tauri::command]
+async fn close_tab(tab_id: String) -> Result<(), String> {
+    // Drop our parked writer for the tab too.
+    set_active_writer(&tab_id, None);
+    let mut s = connect_agent()?;
+    writeln!(s, "{}", serde_json::json!({ "close_tab": tab_id })).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Resize the window with NO animation, bypassing AppKit's implicit
@@ -598,14 +719,9 @@ async fn open_reply_window(
 
     #[cfg(target_os = "macos")]
     {
-        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
-        let _ = apply_vibrancy(
-            &w,
-            NSVisualEffectMaterial::Sheet,
-            Some(NSVisualEffectState::Active),
-            Some(14.0),
-        );
-
+        // Native vibrancy (NSVisualEffectView) intentionally NOT applied — it
+        // auto-fills the whole window, which prevents transparent regions. The
+        // frosted glass is done in CSS (backdrop-filter + --glass-grad).
         if let Ok(ns_window) = w.ns_window() {
             use cocoa::base::{id, nil};
             use cocoa::foundation::NSString;
@@ -1030,7 +1146,9 @@ async fn restart_daemon() -> Result<(), String> {
     if !start.success() {
         return Err(format!("launchctl start exited with {:?}", start.code()));
     }
-    set_active_writer(None);
+    if let Ok(mut g) = active_writers().lock() {
+        g.clear();
+    }
     Ok(())
 }
 
@@ -1075,19 +1193,14 @@ fn main() {
 
             #[cfg(target_os = "macos")]
             {
-                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
-
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-                // Light translucent material — matches macOS Spotlight's look:
-                // desktop colors visibly bleed through the frosted glass. Was
-                // HudWindow (dark), which fought with the warm/light theme.
-                let _ = apply_vibrancy(
-                    &window,
-                    NSVisualEffectMaterial::Sheet,
-                    Some(NSVisualEffectState::Active),
-                    Some(16.0),
-                );
+                // Native vibrancy (NSVisualEffectView) intentionally NOT applied.
+                // It auto-resizes to fill the whole window, so a grown window
+                // (e.g. the open actions dropdown) showed a frosted box instead
+                // of letting the desktop show through the gap. The frosted glass
+                // is now done entirely in CSS (backdrop-filter + --glass-grad),
+                // so transparent regions (#app.menu-float) are truly transparent.
 
                 if let Ok(ns_window) = window.ns_window() {
                     use cocoa::base::{id, nil};
@@ -1124,9 +1237,15 @@ fn main() {
             save_image,
             save_file,
             cancel_query,
+            send_answer,
             start_fresh_session,
             resume_session,
+            set_model,
+            get_usage,
+            reset_usage,
             interrupt_query,
+            new_tab,
+            close_tab,
             open_external,
             open_reply_window,
             read_sessions,
