@@ -192,7 +192,7 @@ If no Pinecone index has been configured yet, ask Yuyang once which index name a
 
 ## Agent Architecture — Spotlight + Daemon + iOS
 
-> **UI sync rule.** Any change to Spotlight UI (desktop `spotlight/src/` or `spotlight-ios/`) — new components, layout, colors, states — must be mirrored into the design doc: [Spotlight — Orange Liquid Glass](https://www.figma.com/design/P5vFz9LI4XHv0FeOClmbVK/Spotlight-%E2%80%94-Orange-Liquid-Glass?node-id=5-2&t=4GRmkCQid4tIMV9i-0). Use the Figma MCP to push/update frames after shipping UI changes; flag for Yuyang if a change can't be represented.
+> **UI sync rule.** Any change to Spotlight UI (desktop `spotlight/src/` or `spotlight-ios/`) — new components, layout, colors, states — must be mirrored into the design doc: [Spotlight — Slate Liquid Glass](https://www.figma.com/design/P5vFz9LI4XHv0FeOClmbVK/Spotlight-%E2%80%94-Slate-Liquid-Glass?node-id=5-2) (file key `P5vFz9LI4XHv0FeOClmbVK`; neutral editorial glass + slate-blue accent — the old "Orange Liquid Glass" name is retired). Brand marks live in the [Spotlight Logo](https://www.figma.com/design/oLx2mdm6v9nQjCvygsP7v9/Spotlight-Logo?node-id=0-1) file (key `oLx2mdm6v9nQjCvygsP7v9`); the recolored slate set is on its **Logos — Slate** page, explorations on the **Explorations** page. Use the Figma MCP to push/update frames after shipping UI changes; flag for Yuyang if a change can't be represented.
 
 The agent runs as a tree of three components living under `~/Documents/my-agent/`:
 
