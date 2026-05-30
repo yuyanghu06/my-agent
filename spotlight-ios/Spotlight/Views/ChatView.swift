@@ -79,8 +79,12 @@ struct ChatView: View {
                             .frame(maxWidth: .infinity)
                     }
                     ForEach(turns) { t in
-                        TurnView(turn: t, streaming: agent.isStreaming && t.id == turns.last?.id)
-                            .id(t.id)
+                        TurnView(
+                            turn: t,
+                            streaming: agent.isStreaming && t.id == turns.last?.id,
+                            onAnswer: handleAnswer
+                        )
+                        .id(t.id)
                     }
                 }
                 .padding(.vertical, 8)
@@ -164,6 +168,8 @@ struct ChatView: View {
                     turns[i].appendChunk(s)
                 case .tool(let n, let l):
                     turns[i].appendTool(name: n, label: l)
+                case .question(let prompt):
+                    turns[i].appendQuestion(prompt)
                 case .done(let response):
                     if turns[i].fullText.isEmpty && !response.isEmpty {
                         turns[i].fullText = response
@@ -185,6 +191,13 @@ struct ChatView: View {
 
     private func cancel() {
         Task { await agent.cancel() }
+    }
+
+    /// Submit an AskUserQuestion answer: mark the card answered locally and post
+    /// it back on the live connection so the parked turn resumes streaming.
+    private func handleAnswer(_ requestId: String, _ answers: [String: String]) {
+        for idx in turns.indices { turns[idx].markQuestionAnswered(requestId) }
+        Task { await agent.sendAnswer(requestId: requestId, answers: answers) }
     }
 
     // MARK: sessions

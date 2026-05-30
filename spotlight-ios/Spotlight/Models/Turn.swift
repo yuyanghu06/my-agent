@@ -15,6 +15,7 @@ struct Turn: Identifiable, Equatable {
     enum Segment: Equatable {
         case text(String)
         case tool(name: String, label: String)
+        case question(QuestionPrompt, answered: Bool)
     }
 
     static func user(query: String, images: [UploadedAttachment] = []) -> Turn {
@@ -41,6 +42,40 @@ struct Turn: Identifiable, Equatable {
     mutating func appendTool(name: String, label: String) {
         segments.append(.tool(name: name, label: label))
     }
+
+    mutating func appendQuestion(_ q: QuestionPrompt) {
+        segments.append(.question(q, answered: false))
+    }
+
+    mutating func markQuestionAnswered(_ requestId: String) {
+        for i in segments.indices {
+            if case .question(let q, _) = segments[i], q.id == requestId {
+                segments[i] = .question(q, answered: true)
+            }
+        }
+    }
+}
+
+// MARK: AskUserQuestion
+
+/// An AskUserQuestion prompt the daemon parked the turn on. The reply rides the
+/// live query connection as {answer:{request_id,answers}}; answers are keyed by
+/// the exact question text -> chosen option label(s).
+struct QuestionPrompt: Equatable, Identifiable {
+    let id: String          // request_id
+    let questions: [QuestionItem]
+}
+
+struct QuestionItem: Equatable, Decodable {
+    let question: String
+    let header: String?
+    let multiSelect: Bool?
+    let options: [QuestionOption]
+}
+
+struct QuestionOption: Equatable, Decodable {
+    let label: String
+    let description: String?
 }
 
 /// An image already pushed to the host's spotlight-images/ directory; we

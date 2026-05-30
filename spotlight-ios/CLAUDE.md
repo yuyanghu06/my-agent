@@ -46,6 +46,8 @@ client → host:  {"auth":"<token>"}\n                       (first line on ever
 client → host:  {"query":"..."}\n                          (main request)
 client → host:  {"cancel":true}\n                          (same connection, stop in-flight)
 client → host:  {"interrupt":true,"query":"..."}\n         (same connection, swap query)
+client → host:  {"answer":{"request_id":"...","answers":{"<question>":"<label>"}}}\n
+                                                            (same connection, answers an AskUserQuestion)
 client → host:  {"fresh":true}\n                           (NEW connection; daemon flag for next turn)
 client → host:  {"resume":"<uuid>"}\n                      (NEW connection; daemon flag for next turn)
 client → host:  {"upload":{"kind":"image","name":"x.jpg","data":"<b64>"}}\n
@@ -54,6 +56,8 @@ client → host:  {"upload":{"kind":"image","name":"x.jpg","data":"<b64>"}}\n
 host   → client: {"session_id":"..."}\n                    (once, near start)
 host   → client: {"chunk":"..."}\n                         (many)
 host   → client: {"tool":"Read","label":"path/to/file"}\n  (between chunks)
+host   → client: {"question":{"request_id":"...","questions":[...]}}\n
+                                                            (AskUserQuestion prompt; turn parks until the client answers)
 host   → client: {"done":true,"response":"..."}\n          (terminates the stream)
 host   → client: {"error":"...","done":true}\n             (terminal)
 host   → client: {"error":"...","cancelled":true}\n        (terminal, in response to cancel)

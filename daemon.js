@@ -1,16 +1,32 @@
 import net from 'net';
-import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+
+// The daemon's MCP servers (apple-calendar, google-*, linear, ghl, …) live in
+// the classic ~/.claude.json top-level `mcpServers`, NOT in settings.json. The
+// SDK's settingSources only loads settings.json, so we read that block once at
+// startup and pass it explicitly via the SDK `mcpServers` option — guaranteeing
+// the same server set the old `claude` spawn picked up by reading ~/.claude.json.
+function loadGlobalMcpServers() {
+  try {
+    const cfgPath = path.join(process.env.HOME || '/Users/yuyang', '.claude.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const servers = cfg.mcpServers && typeof cfg.mcpServers === 'object' ? cfg.mcpServers : {};
+    return { servers, count: Object.keys(servers).length };
+  } catch (e) {
+    return { servers: {}, count: 0, error: e.message };
+  }
+}
+const { servers: GLOBAL_MCP_SERVERS, count: MCP_COUNT, error: MCP_ERR } = loadGlobalMcpServers();
 
 const ROOT = process.env.CLAUDE_AGENT_ROOT || path.dirname(fileURLToPath(import.meta.url));
 const SOCKET_PATH = process.env.CLAUDE_AGENT_SOCKET || '/tmp/claude-agent.sock';
 const LOG_DIR = path.join(ROOT, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'daemon.log');
-const MEMORY_PATH = path.join(ROOT, 'MEMORY.md');
 const QUERY_TIMEOUT_MS = 600_000;
-const MEMORY_IDLE_REFRESH_MS = 5 * 60_000;
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
@@ -20,41 +36,121 @@ function log(...args) {
   process.stdout.write(line);
 }
 
-let activeQuery = null;
-const queue = [];
-let lastActivity = Date.now();
-let memoryDirty = false;
-let forceFresh = false;
-// One-shot override: when set, the next runQuery uses `--resume <uuid>` so
-// claude reattaches to the conversation behind that session id (instead of
-// --continue, which always resumes whichever was most recent).
-let resumeSessionId = null;
-let lastMemoryMtime = 0;
-try { lastMemoryMtime = fs.statSync(MEMORY_PATH).mtimeMs; } catch {}
+let tabCounter = 0;
 
-try {
-  fs.watch(MEMORY_PATH, () => {
-    try {
-      const m = fs.statSync(MEMORY_PATH).mtimeMs;
-      if (m !== lastMemoryMtime) {
-        lastMemoryMtime = m;
-        memoryDirty = true;
-        log('MEMORY.md changed — next idle session will start fresh');
-      }
-    } catch {}
+// Active model alias passed to the claude CLI via --model. null = CLI default
+// (whatever the user's claude config selects). Set globally via the {set_model}
+// control message from spotlight; applies to every tab's next query.
+let activeModel = null;
+
+// Rolling usage counters since daemon start (or since the last {reset_usage}).
+// Fed from each query's `result` event, surfaced via the {usage} request so
+// spotlight's /usage command can render a cost/token panel.
+const usage = {
+  since: Date.now(),
+  turns: 0,
+  costUsd: 0,
+  durationMs: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreateTokens: 0,
+  cacheReadTokens: 0,
+  byModel: {}, // model -> { turns, inputTokens, outputTokens, cacheCreateTokens, cacheReadTokens, costUsd }
+};
+
+function bucket(model) {
+  return usage.byModel[model] || (usage.byModel[model] = {
+    turns: 0, inputTokens: 0, outputTokens: 0,
+    cacheCreateTokens: 0, cacheReadTokens: 0, costUsd: 0,
   });
-} catch (e) {
-  log('memory watch failed:', e.message);
+}
+
+function recordUsage(evt) {
+  usage.turns += 1;
+  if (typeof evt.total_cost_usd === 'number') usage.costUsd += evt.total_cost_usd;
+  if (typeof evt.duration_ms === 'number') usage.durationMs += evt.duration_ms;
+  const u = evt.usage || {};
+  const inTok = u.input_tokens || 0;
+  const outTok = u.output_tokens || 0;
+  const ccTok = u.cache_creation_input_tokens || 0;
+  const crTok = u.cache_read_input_tokens || 0;
+  usage.inputTokens += inTok;
+  usage.outputTokens += outTok;
+  usage.cacheCreateTokens += ccTok;
+  usage.cacheReadTokens += crTok;
+  // Per-model breakdown. claude emits modelUsage keyed by model id; fall back
+  // to the active alias (or "default") when it's absent.
+  const mu = evt.modelUsage && typeof evt.modelUsage === 'object' ? evt.modelUsage : null;
+  if (mu && Object.keys(mu).length) {
+    for (const [model, m] of Object.entries(mu)) {
+      const b = bucket(model);
+      b.turns += 1;
+      b.inputTokens += m.inputTokens || m.input_tokens || 0;
+      b.outputTokens += m.outputTokens || m.output_tokens || 0;
+      b.cacheCreateTokens += m.cacheCreationInputTokens || m.cache_creation_input_tokens || 0;
+      b.cacheReadTokens += m.cacheReadInputTokens || m.cache_read_input_tokens || 0;
+      b.costUsd += m.costUSD || m.cost_usd || 0;
+    }
+  } else {
+    const b = bucket(activeModel || 'default');
+    b.turns += 1;
+    b.inputTokens += inTok;
+    b.outputTokens += outTok;
+    b.cacheCreateTokens += ccTok;
+    b.cacheReadTokens += crTok;
+    if (typeof evt.total_cost_usd === 'number') b.costUsd += evt.total_cost_usd;
+  }
 }
 
 try { fs.unlinkSync(SOCKET_PATH); } catch {}
 
-// Per-socket "current session UUID" — captured from claude's system event
-// on every spawn, then fed back as --resume <uuid> on the next turn. This
-// is the canonical multi-turn mechanism: each socket gets its own session,
-// the daemon never uses --continue (which picks "most recently touched on
-// disk" and races against concurrent sockets like side-chat windows).
-const socketSession = new WeakMap();
+// ============================================================
+// Per-tab state — keyed by tab_id STRING (not socket object).
+//
+// A "tab" is one logical claude conversation. The spotlight UI can run
+// several in parallel, each with its own claude child process. Keying by a
+// stable string (rather than the per-query socket, which the client opens
+// fresh every turn) is what makes both multi-turn continuity AND concurrent
+// tabs work: the captured session UUID survives across connections.
+//
+// Messages without a tab_id fall back to "default", so a single-tab client
+// keeps working unchanged.
+// ============================================================
+const DEFAULT_TAB = 'default';
+const tabSession = new Map();    // tabId -> captured claude session uuid
+const tabResume = new Map();     // tabId -> one-shot --resume uuid (from {resume})
+const tabFresh = new Set();      // tabIds whose next query starts fresh
+const activeQueries = new Map(); // tabId -> { socket, q (SDK query handle), timer, aborter }
+const tabQueue = new Map();      // tabId -> [ { socket, query } ]
+
+// In-flight AskUserQuestion round-trips. The canUseTool callback parks a promise
+// here keyed by a generated request_id; the {answer} control message resolves it,
+// killTab/cancel rejects it so the SDK call unwinds instead of hanging forever.
+const pendingQuestions = new Map(); // request_id -> { resolve, reject, tabId }
+
+function rejectPendingForTab(tabId, reason) {
+  for (const [id, p] of pendingQuestions) {
+    if (p.tabId === tabId) {
+      try { p.reject(new Error(reason)); } catch {}
+      pendingQuestions.delete(id);
+    }
+  }
+}
+
+function tabIdOf(msg) {
+  return typeof msg.tab_id === 'string' && msg.tab_id ? msg.tab_id : DEFAULT_TAB;
+}
+
+function killTab(tabId) {
+  const aq = activeQueries.get(tabId);
+  if (aq) {
+    rejectPendingForTab(tabId, 'cancelled');
+    try { aq.aborter?.abort(); } catch {}
+    try { aq.q?.interrupt?.(); } catch {}
+    clearTimeout(aq.timer);
+    activeQueries.delete(tabId);
+  }
+}
 
 const server = net.createServer((socket) => {
   let buf = '';
@@ -70,34 +166,103 @@ const server = net.createServer((socket) => {
         socket.write(JSON.stringify({ error: 'Invalid JSON' }) + '\n');
         continue;
       }
-      // fresh: drop --continue on the next query so claude starts a new
-      // session. Used by spotlight on app launch and on /clear.
+      const tabId = tabIdOf(msg);
+
+      // new_tab: allocate a fresh tab id and hand it back. The tab carries no
+      // session until its first query captures one.
+      if (msg.new_tab === true) {
+        const id = `tab-${++tabCounter}`;
+        log(`new tab ${id}`);
+        try { socket.write(JSON.stringify({ new_tab_id: id }) + '\n'); } catch {}
+        continue;
+      }
+      // close_tab: kill any in-flight child and drop all state for the tab.
+      if (typeof msg.close_tab === 'string' && msg.close_tab) {
+        const id = msg.close_tab;
+        killTab(id);
+        tabSession.delete(id);
+        tabResume.delete(id);
+        tabFresh.delete(id);
+        tabQueue.delete(id);
+        log(`closed tab ${id}`);
+        try { socket.write(JSON.stringify({ closed: id }) + '\n'); } catch {}
+        continue;
+      }
+      // set_model: change the model alias passed to claude via --model for all
+      // subsequent queries. Empty string / null resets to the CLI default.
+      if ('set_model' in msg) {
+        const m = typeof msg.set_model === 'string' ? msg.set_model.trim() : '';
+        activeModel = m || null;
+        log(`model set to ${activeModel || '(default)'}`);
+        try { socket.write(JSON.stringify({ model: activeModel }) + '\n'); } catch {}
+        continue;
+      }
+      // get_model: report the currently active model alias.
+      if (msg.get_model === true) {
+        try { socket.write(JSON.stringify({ model: activeModel }) + '\n'); } catch {}
+        continue;
+      }
+      // usage: report rolling cost/token counters since daemon start.
+      if (msg.usage === true) {
+        try {
+          socket.write(JSON.stringify({ usage_stats: { ...usage, model: activeModel } }) + '\n');
+        } catch {}
+        continue;
+      }
+      // reset_usage: zero the counters and restart the window.
+      if (msg.reset_usage === true) {
+        usage.since = Date.now();
+        usage.turns = 0; usage.costUsd = 0; usage.durationMs = 0;
+        usage.inputTokens = 0; usage.outputTokens = 0;
+        usage.cacheCreateTokens = 0; usage.cacheReadTokens = 0;
+        usage.byModel = {};
+        log('usage counters reset');
+        try { socket.write(JSON.stringify({ usage_reset: true }) + '\n'); } catch {}
+        continue;
+      }
+      // list_tabs: report the tabs that currently hold a captured session.
+      if (msg.list_tabs === true) {
+        const tabs = [...tabSession.entries()].map(([id, sid]) => ({ id, session_id: sid }));
+        try { socket.write(JSON.stringify({ tabs }) + '\n'); } catch {}
+        continue;
+      }
+      // fresh: the next query for this tab drops --resume so claude starts a
+      // new session. Used by spotlight on /clear and when opening a new tab.
       if (msg.fresh === true) {
-        forceFresh = true;
-        resumeSessionId = null;
-        log('forceFresh requested — next query starts a fresh session');
+        tabFresh.add(tabId);
+        tabResume.delete(tabId);
+        log(`fresh requested for ${tabId}`);
         continue;
       }
-      // resume: use --resume <uuid> on the next query so claude reattaches
-      // to a specific prior session. Used by spotlight when restoring a
-      // saved session via /sessions.
+      // resume: the next query for this tab uses --resume <uuid> so claude
+      // reattaches to a specific prior session (e.g. /sessions restore).
       if (typeof msg.resume === 'string' && msg.resume.length > 0) {
-        resumeSessionId = msg.resume;
-        forceFresh = false;
-        log(`resume requested — next query will --resume ${msg.resume}`);
+        tabResume.set(tabId, msg.resume);
+        tabFresh.delete(tabId);
+        log(`resume requested for ${tabId} — next query --resume ${msg.resume}`);
         continue;
       }
-      // cancel: stop the in-flight child for THIS connection
+      // answer: the client's response to an AskUserQuestion prompt. Resolves the
+      // parked canUseTool promise so the SDK call continues with the user's pick.
+      if (msg.answer && typeof msg.answer === 'object') {
+        const { request_id, answers } = msg.answer;
+        const pending = request_id && pendingQuestions.get(request_id);
+        if (pending) {
+          pendingQuestions.delete(request_id);
+          log(`answer received for ${tabId} (req ${request_id})`);
+          try { pending.resolve(answers || {}); } catch {}
+        } else {
+          log(`answer for unknown/stale request_id ${request_id} — ignored`);
+        }
+        continue;
+      }
+      // cancel: stop the in-flight child for THIS tab.
       if (msg.cancel === true) {
-        if (activeQuery && activeQuery.socket === socket) {
-          log('cancel requested by client');
-          try { activeQuery.child.kill('SIGTERM'); } catch {}
-          // child 'exit' handler will call finishQuery; we beat it to the
-          // punch with an explicit cancel signal.
-          clearTimeout(activeQuery.timer);
-          activeQuery = null;
+        if (activeQueries.has(tabId)) {
+          log(`cancel requested for ${tabId}`);
+          killTab(tabId);
           try { socket.write(JSON.stringify({ error: 'Cancelled', cancelled: true }) + '\n'); } catch {}
-          processQueue();
+          processQueue(tabId);
         }
         continue;
       }
@@ -105,20 +270,23 @@ const server = net.createServer((socket) => {
         socket.write(JSON.stringify({ error: 'Missing query field' }) + '\n');
         continue;
       }
-      // interrupt: cancel current and immediately start the new query.
-      // runQuery picks up this socket's saved session UUID automatically,
-      // so the re-spawn naturally --resumes the same conversation.
-      if (msg.interrupt === true && activeQuery && activeQuery.socket === socket) {
-        log('interrupt requested — swapping query');
-        try { activeQuery.child.kill('SIGTERM'); } catch {}
-        clearTimeout(activeQuery.timer);
-        activeQuery = null;
+      // interrupt: cancel this tab's current query and immediately start the
+      // new one. runQuery picks up the tab's captured session UUID, so the
+      // re-spawn naturally --resumes the same conversation.
+      if (msg.interrupt === true && activeQueries.has(tabId)) {
+        log(`interrupt requested for ${tabId} — swapping query`);
+        killTab(tabId);
         // brief delay so the SIGTERM is processed before respawning
-        setTimeout(() => runQuery(socket, msg.query), 80);
+        setTimeout(() => runQuery(tabId, socket, msg.query), 80);
         continue;
       }
-      if (activeQuery) queue.push({ socket, query: msg.query });
-      else runQuery(socket, msg.query);
+      if (activeQueries.has(tabId)) {
+        const q = tabQueue.get(tabId) || [];
+        q.push({ socket, query: msg.query });
+        tabQueue.set(tabId, q);
+      } else {
+        runQuery(tabId, socket, msg.query);
+      }
     }
   });
   socket.on('error', (e) => log('socket error:', e.message));
@@ -127,6 +295,8 @@ const server = net.createServer((socket) => {
 server.listen(SOCKET_PATH, () => {
   fs.chmodSync(SOCKET_PATH, 0o600);
   log('listening on', SOCKET_PATH);
+  if (MCP_ERR) log(`WARNING: failed to load MCP servers from ~/.claude.json: ${MCP_ERR}`);
+  else log(`loaded ${MCP_COUNT} MCP servers: ${Object.keys(GLOBAL_MCP_SERVERS).join(', ')}`);
 });
 
 function extractToolLabel(toolName, input) {
@@ -148,204 +318,211 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-function runQuery(socket, query) {
-  const idleElapsed = Date.now() - lastActivity > MEMORY_IDLE_REFRESH_MS;
-  const memoryFresh = memoryDirty && idleElapsed;
-  const startFresh = memoryFresh || forceFresh;
-  if (memoryFresh) {
-    memoryDirty = false;
-    log('starting fresh session — memory updated, idle elapsed');
-  }
-  if (forceFresh) {
-    forceFresh = false;
-    log('starting fresh session — explicit fresh request from client');
+// canUseTool: auto-allow every tool (preserving the old --dangerously-skip-
+// permissions behaviour) EXCEPT AskUserQuestion, which we surface to the client
+// as a {question} card and block on until the matching {answer} comes back.
+function makeCanUseTool(tabId, socket) {
+  return async (toolName, input) => {
+    if (toolName !== 'AskUserQuestion') {
+      return { behavior: 'allow', updatedInput: input };
+    }
+    const request_id = crypto.randomUUID();
+    log(`[${tabId}] AskUserQuestion -> client (req ${request_id})`);
+    try {
+      const answers = await new Promise((resolve, reject) => {
+        pendingQuestions.set(request_id, { resolve, reject, tabId });
+        socket.write(JSON.stringify({
+          question: { request_id, questions: input.questions || [] },
+          done: false,
+        }) + '\n');
+      });
+      // answers: { "<exact question text>": "<chosen label(s)>" } — matches the
+      // shape AskUserQuestion's own `answers` field expects.
+      return { behavior: 'allow', updatedInput: { ...input, answers: answers || {} } };
+    } catch (e) {
+      pendingQuestions.delete(request_id);
+      return { behavior: 'deny', message: 'Question cancelled' };
+    }
+  };
+}
+
+function runQuery(tabId, socket, query) {
+  const startFresh = tabFresh.has(tabId);
+  if (startFresh) {
+    tabFresh.delete(tabId);
+    log(`starting fresh session for ${tabId} — explicit fresh request`);
   }
 
   // Pick the session UUID to resume:
-  //   1. fresh requested  → no flag, claude generates a new uuid; socketSession
+  //   1. fresh requested  → no resume, SDK generates a new uuid; tabSession
   //      cleared now and rewritten when the system event arrives.
   //   2. client sent {resume:<uuid>}  → one-shot override (e.g. /sessions load).
-  //   3. socket already has a captured uuid from a prior turn  → resume it.
-  //   4. first-ever turn on this socket  → no flag, capture the new uuid.
+  //   3. tab already has a captured uuid from a prior turn  → resume it.
+  //   4. first-ever turn on this tab  → no resume, capture the new uuid.
   let sessionToResume = null;
   if (startFresh) {
-    socketSession.delete(socket);
-  } else if (resumeSessionId) {
-    sessionToResume = resumeSessionId;
-    resumeSessionId = null; // one-shot
+    tabSession.delete(tabId);
+  } else if (tabResume.has(tabId)) {
+    sessionToResume = tabResume.get(tabId);
+    tabResume.delete(tabId); // one-shot
   } else {
-    sessionToResume = socketSession.get(socket) || null;
+    sessionToResume = tabSession.get(tabId) || null;
   }
 
-  const args = [
-    '--print',
-    '--dangerously-skip-permissions',
-    '--output-format', 'stream-json',
-    '--include-partial-messages',
-    '--verbose',
-  ];
-  if (sessionToResume) {
-    args.push('--resume', sessionToResume);
-    log(`resuming claude session ${sessionToResume}`);
-  } else {
-    log('starting fresh claude session (no saved uuid)');
-  }
-  args.push(query);
-
-  log(`query (fresh=${startFresh}):`, query.slice(0, 200));
-  lastActivity = Date.now();
-
-  const child = spawn('claude', args, {
-    cwd: ROOT,
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  if (sessionToResume) log(`[${tabId}] resuming claude session ${sessionToResume}`);
+  else log(`[${tabId}] starting fresh claude session (no saved uuid)`);
+  if (activeModel) log(`[${tabId}] using model ${activeModel}`);
+  log(`[${tabId}] query (fresh=${startFresh}):`, query.slice(0, 200));
 
   let collected = '';
   let finalResult = null;
-  let lineBuf = '';
   // Track in-flight tool_use blocks: index -> { name, inputBuf }
   const partialBlocks = {};
 
+  const aborter = new AbortController();
+  const q = sdkQuery({
+    prompt: query,
+    options: {
+      cwd: ROOT,                                  // load my-agent/CLAUDE.md (+ @MEMORY.md)
+      permissionMode: 'default',                  // 'default' so canUseTool fires
+      canUseTool: makeCanUseTool(tabId, socket),
+      includePartialMessages: true,               // emit stream_event chunks
+      settingSources: ['user', 'project', 'local'],
+      mcpServers: GLOBAL_MCP_SERVERS,             // from ~/.claude.json (see top)
+      abortController: aborter,
+      ...(sessionToResume ? { resume: sessionToResume } : {}),
+      ...(activeModel ? { model: activeModel } : {}),
+    },
+  });
+
+  // True only when WE aborted (cancel/interrupt/timeout) — distinguishes an
+  // expected unwind from a genuine SDK error in the catch below.
+  let selfAborted = false;
   const timer = setTimeout(() => {
-    log('query timeout');
-    try { child.kill('SIGTERM'); } catch {}
-    finishQuery({ error: `Timed out after ${QUERY_TIMEOUT_MS / 1000}s` });
+    log(`[${tabId}] query timeout`);
+    selfAborted = true;
+    try { aborter.abort(); } catch {}
+    try { q.interrupt?.(); } catch {}
+    finishQuery(tabId, { error: `Timed out after ${QUERY_TIMEOUT_MS / 1000}s` });
   }, QUERY_TIMEOUT_MS);
 
-  activeQuery = { socket, child, timer };
+  activeQueries.set(tabId, { socket, q, timer, aborter });
 
-  child.stdout.on('data', (data) => {
-    lineBuf += data.toString('utf8');
-    let idx;
-    while ((idx = lineBuf.indexOf('\n')) !== -1) {
-      const line = lineBuf.slice(0, idx);
-      lineBuf = lineBuf.slice(idx + 1);
-      if (!line.trim()) continue;
-      let evt;
-      try { evt = JSON.parse(line); } catch { continue; }
+  // ownsSlot: an interrupt/cancel may have replaced this tab's slot with a newer
+  // query (or torn it down). Guard every socket write / finish on still owning it.
+  const ownsSlot = () => {
+    const owner = activeQueries.get(tabId);
+    return owner && owner.q === q;
+  };
 
-      // claude session id from the init system message — forward so the
-      // client can persist it for later --resume <uuid>.
-      if (evt.type === 'system' && evt.session_id) {
-        socketSession.set(socket, evt.session_id);
-        try {
-          socket.write(JSON.stringify({ session_id: evt.session_id, done: false }) + '\n');
-        } catch {}
+  (async () => {
+    try {
+      for await (const evt of q) {
+        if (!ownsSlot()) return;
+
+        // claude session id from the init system message — capture per-tab and
+        // forward so the client can persist it for later resume.
+        if (evt.type === 'system' && evt.session_id) {
+          tabSession.set(tabId, evt.session_id);
+          try { socket.write(JSON.stringify({ session_id: evt.session_id, done: false }) + '\n'); } catch {}
+        }
+
+        // text delta — stream to client
+        if (
+          evt.type === 'stream_event' &&
+          evt.event?.type === 'content_block_delta' &&
+          evt.event.delta?.type === 'text_delta'
+        ) {
+          const piece = evt.event.delta.text || '';
+          if (piece) {
+            collected += piece;
+            try { socket.write(JSON.stringify({ chunk: piece, done: false }) + '\n'); } catch {}
+          }
+        }
+        // tool_use start — record so we can buffer the input deltas
+        else if (
+          evt.type === 'stream_event' &&
+          evt.event?.type === 'content_block_start' &&
+          evt.event.content_block?.type === 'tool_use'
+        ) {
+          partialBlocks[evt.event.index] = { name: evt.event.content_block.name || 'tool', inputBuf: '' };
+        }
+        // tool_use input chunks
+        else if (
+          evt.type === 'stream_event' &&
+          evt.event?.type === 'content_block_delta' &&
+          evt.event.delta?.type === 'input_json_delta'
+        ) {
+          const blk = partialBlocks[evt.event.index];
+          if (blk) blk.inputBuf += evt.event.delta.partial_json || '';
+        }
+        // tool_use end — parse the input, extract a human label, forward.
+        // AskUserQuestion gets its own interactive {question} card, so skip the
+        // redundant tool chip for it.
+        else if (
+          evt.type === 'stream_event' &&
+          evt.event?.type === 'content_block_stop'
+        ) {
+          const blk = partialBlocks[evt.event.index];
+          if (blk) {
+            if (blk.name !== 'AskUserQuestion') {
+              let label = '';
+              try { label = extractToolLabel(blk.name, JSON.parse(blk.inputBuf)); } catch {}
+              try { socket.write(JSON.stringify({ tool: blk.name, label, done: false }) + '\n'); } catch {}
+            }
+            delete partialBlocks[evt.event.index];
+          }
+        }
+        // final result
+        else if (evt.type === 'result') {
+          try { recordUsage(evt); } catch (e) { log('usage record failed:', e.message); }
+          if (evt.is_error) finalResult = { error: evt.result || 'claude reported an error' };
+          else finalResult = { response: (evt.result || collected).trim() };
+        }
       }
 
-      // text delta — stream to client
-      if (
-        evt.type === 'stream_event' &&
-        evt.event?.type === 'content_block_delta' &&
-        evt.event.delta?.type === 'text_delta'
-      ) {
-        const piece = evt.event.delta.text || '';
-        if (piece) {
-          collected += piece;
-          try { socket.write(JSON.stringify({ chunk: piece, done: false }) + '\n'); } catch {}
-        }
-      }
-      // tool_use start — record so we can buffer the input deltas
-      else if (
-        evt.type === 'stream_event' &&
-        evt.event?.type === 'content_block_start' &&
-        evt.event.content_block?.type === 'tool_use'
-      ) {
-        const idx = evt.event.index;
-        partialBlocks[idx] = { name: evt.event.content_block.name || 'tool', inputBuf: '' };
-      }
-      // tool_use input chunks
-      else if (
-        evt.type === 'stream_event' &&
-        evt.event?.type === 'content_block_delta' &&
-        evt.event.delta?.type === 'input_json_delta'
-      ) {
-        const idx = evt.event.index;
-        if (partialBlocks[idx]) {
-          partialBlocks[idx].inputBuf += evt.event.delta.partial_json || '';
-        }
-      }
-      // tool_use end — parse the input, extract a human label, forward
-      else if (
-        evt.type === 'stream_event' &&
-        evt.event?.type === 'content_block_stop'
-      ) {
-        const idx = evt.event.index;
-        const blk = partialBlocks[idx];
-        if (blk) {
-          let label = '';
-          try {
-            const parsed = JSON.parse(blk.inputBuf);
-            label = extractToolLabel(blk.name, parsed);
-          } catch {}
-          try { socket.write(JSON.stringify({ tool: blk.name, label, done: false }) + '\n'); } catch {}
-          delete partialBlocks[idx];
-        }
-      }
-      // final result
-      else if (evt.type === 'result') {
-        if (evt.is_error) {
-          finalResult = { error: evt.result || 'claude reported an error' };
-        } else {
-          finalResult = { response: (evt.result || collected).trim() };
-        }
-      }
+      // Generator finished normally.
+      if (!ownsSlot()) return;
+      clearTimeout(timer);
+      if (finalResult?.error) finishQuery(tabId, { error: finalResult.error });
+      else if (finalResult?.response !== undefined) finishQuery(tabId, { chunk: '', response: finalResult.response, done: true });
+      else finishQuery(tabId, { chunk: '', response: collected.trim(), done: true });
+    } catch (err) {
+      // Aborts from interrupt/cancel/timeout land here. If we triggered the abort
+      // or a newer query owns the slot, this is an expected unwind — stay quiet.
+      clearTimeout(timer);
+      if (selfAborted || !ownsSlot()) return;
+      finishQuery(tabId, { error: `claude error: ${err?.message || String(err)}` });
     }
-  });
-
-  child.stderr.on('data', (chunk) => log('claude stderr:', chunk.toString().trim()));
-
-  child.on('exit', (code, signal) => {
-    // Race guard: if the interrupt path SIGTERM'd this child and replaced
-    // activeQuery with a NEW query, ignore this exit completely. Otherwise
-    // we'd write a spurious `claude exited with code 143` against the new
-    // query's socket and tear it down. The interrupt handler already cleared
-    // its own timer; only finish for OUR own activeQuery.
-    if (!activeQuery || activeQuery.child !== child) return;
-    clearTimeout(timer);
-    // Also ignore explicit SIGTERM exits with no result — those are us.
-    if (signal === 'SIGTERM' && !finalResult) return;
-    if (finalResult?.error) {
-      finishQuery({ error: finalResult.error });
-    } else if (finalResult?.response !== undefined) {
-      finishQuery({ chunk: '', response: finalResult.response, done: true });
-    } else if (code !== 0 && code != null) {
-      finishQuery({ error: `claude exited with code ${code}` });
-    } else {
-      finishQuery({ chunk: '', response: collected.trim(), done: true });
-    }
-  });
-
-  child.on('error', (err) => {
-    if (!activeQuery || activeQuery.child !== child) return;
-    clearTimeout(timer);
-    finishQuery({ error: `spawn failed: ${err.message}` });
-  });
+  })();
 }
 
-function finishQuery(payload) {
-  if (!activeQuery) return;
-  const { socket } = activeQuery;
-  activeQuery = null;
-  lastActivity = Date.now();
-  try { socket.write(JSON.stringify(payload) + '\n'); }
+function finishQuery(tabId, payload) {
+  const aq = activeQueries.get(tabId);
+  if (!aq) return;
+  activeQueries.delete(tabId);
+  try { aq.socket.write(JSON.stringify(payload) + '\n'); }
   catch (e) { log('write failed:', e.message); }
-  processQueue();
+  processQueue(tabId);
 }
 
-function processQueue() {
-  if (activeQuery || queue.length === 0) return;
-  const next = queue.shift();
-  if (next.socket.destroyed) return processQueue();
-  runQuery(next.socket, next.query);
+function processQueue(tabId) {
+  if (activeQueries.has(tabId)) return;
+  const q = tabQueue.get(tabId);
+  if (!q || q.length === 0) return;
+  const next = q.shift();
+  if (next.socket.destroyed) return processQueue(tabId);
+  runQuery(tabId, next.socket, next.query);
 }
 
 function shutdown(sig) {
   log(`received ${sig} — shutting down`);
   server.close();
   try { fs.unlinkSync(SOCKET_PATH); } catch {}
-  if (activeQuery?.child) activeQuery.child.kill('SIGTERM');
+  for (const aq of activeQueries.values()) {
+    try { aq.aborter?.abort(); } catch {}
+    try { aq.q?.interrupt?.(); } catch {}
+  }
   setTimeout(() => process.exit(0), 500);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));

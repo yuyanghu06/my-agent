@@ -4,5 +4,16 @@
     "toggleRecording": "CommandOrControl+Shift+1",
     "toggleAutoScreenshot": "CommandOrControl+Shift+S",
     "snapScreenshot": ""
+  },
+  "host": {
+    "enabled": true,
+    "port": 47330,
+    "token": "46d030900ec5a55835fe8e2f43b4c4a3"
+  },
+  "client": {
+    "enabled": false,
+    "host": "",
+    "port": 47330,
+    "token": ""
   }
 }

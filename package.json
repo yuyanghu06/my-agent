@@ -6,5 +6,10 @@
     "start": "node daemon.js",
     "logs": "tail -f logs/daemon.log"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.158"
+  }
 }

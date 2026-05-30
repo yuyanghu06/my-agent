@@ -147,7 +147,20 @@ When Yuyang says "remember X," asserts a durable fact about himself or someone h
 
 Do not duplicate facts already in MEMORY.md. If a fact updates an old one, edit the existing line rather than appending a new one.
 
-Memory updates take effect at the next session restart. The daemon watches MEMORY.md and auto-restarts claude after ~5 minutes of inactivity if memory has changed, so the next conversation Yuyang starts will see the updated context. You don't need to do anything else — just save and confirm.
+Memory updates take effect on the next query. The daemon spawns a fresh `claude` child per turn with `cwd=~/Documents/my-agent`, so CLAUDE.md and MEMORY.md are re-read at the start of every conversation turn — no daemon restart needed. You don't need to do anything else after saving — just confirm.
+
+### Long-term memory (Pinecone)
+
+A Pinecone MCP is connected and serves as the agent's unbounded long-term memory store, complementing MEMORY.md. The two are distinct tools, not duplicates:
+
+- **MEMORY.md** — always-loaded, hand-readable, git-tracked durable facts (identity, preferences, behavioral rules). Small and curated. Use for the canonical "who is Yuyang" and "how should I behave" surface.
+- **Pinecone** — high-volume semantic recall: conversational context, project history, things mentioned in passing, granular facts about people / places / decisions, anything worth being able to look up later but not worth always loading.
+
+**Reading.** Before answering anything that may depend on Yuyang's prior conversations, project history, people he's mentioned, or context not present in MEMORY.md or the working directory, query Pinecone via `mcp__pinecone__search-records` for the topic. Do this proactively — don't wait to be reminded. If multiple angles are plausible, search for several. Read results before responding; never cite a memory you haven't verified is still current.
+
+**Writing.** Whenever you learn something relevant about Yuyang, his work, the people in his life, or ongoing projects that's worth keeping but doesn't fit MEMORY.md (too granular, conversational, project-specific, or just one fact among many), **spawn a subagent via the Agent tool** to embed and upsert it to Pinecone, and **await its result before finishing your reply**. Do not background the write — the daemon runs claude in `--print` mode and exits when the parent reply finishes, so a fire-and-forget subagent will be killed mid-write. The subagent prompt must be self-contained: include the raw text to store, the target index and namespace, suggested tags, and the current date. The subagent calls `mcp__pinecone__upsert-records` and returns; the latency hit is small (a few seconds) and worth the durability.
+
+If no Pinecone index has been configured yet, ask Yuyang once which index name and embedding model he wants, then create it with `mcp__pinecone__create-index-for-model`. Save the chosen index/namespace to MEMORY.md so future sessions know where to read and write.
 
 ---
 
@@ -179,11 +192,16 @@ Memory updates take effect at the next session restart. The daemon watches MEMOR
 
 ## Agent Architecture — Spotlight + Daemon + iOS
 
+> **UI sync rule.** Any change to Spotlight UI (desktop `spotlight/src/` or `spotlight-ios/`) — new components, layout, colors, states — must be mirrored into the design doc: [Spotlight — Orange Liquid Glass](https://www.figma.com/design/P5vFz9LI4XHv0FeOClmbVK/Spotlight-%E2%80%94-Orange-Liquid-Glass?node-id=5-2&t=4GRmkCQid4tIMV9i-0). Use the Figma MCP to push/update frames after shipping UI changes; flag for Yuyang if a change can't be represented.
+
 The agent runs as a tree of three components living under `~/Documents/my-agent/`:
 
 ```
-daemon.js                          Node daemon — owns the claude CLI child, listens on
-                                   /tmp/claude-agent.sock, supervises memory reloads.
+daemon.js                          Node daemon — drives Claude via the Agent SDK
+                                   (@anthropic-ai/claude-agent-sdk) with a canUseTool
+                                   callback for AskUserQuestion; MCP servers loaded from
+                                   ~/.claude.json. Listens on /tmp/claude-agent.sock,
+                                   supervises memory reloads.
 
 spotlight/                         Tauri 2 macOS app. Default frontend on the laptop /
   ├─ src-tauri/src/main.rs         Mac mini. Talks to the daemon over the Unix socket
@@ -209,11 +227,17 @@ client → host:  {"query":"..."}\n
 host   → client: {"session_id":"..."}\n
 host   → client: {"chunk":"..."}\n  (many)
 host   → client: {"tool":"Read","label":"path/to/file"}\n
+host   → client: {"question":{"request_id":"...","questions":[...]}}\n  (AskUserQuestion; parks turn)
 host   → client: {"done":true,"response":"..."}\n
 ```
 
-Plus `{"cancel":true}` / `{"interrupt":true,"query":"..."}` on the live connection,
-and one-shot `{"fresh":true}` / `{"resume":"<uuid>"}` on a new connection.
+Plus `{"cancel":true}` / `{"interrupt":true,"query":"..."}` and
+`{"answer":{"request_id":"...","answers":{...}}}` (the AskUserQuestion reply) on the
+live connection, and one-shot `{"fresh":true}` / `{"resume":"<uuid>"}` on a new connection.
+
+AskUserQuestion is handled in the daemon via the Agent SDK `canUseTool` callback:
+the model's question is forwarded as `{question}`, the turn blocks until the matching
+`{answer}` arrives, then the SDK resumes with the chosen options as the tool result.
 
 The host bridge also intercepts `{"upload":{"kind":"image","name":"...","data":"<b64>"}}`
 without forwarding to the daemon — used by iOS to ship images into

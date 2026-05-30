@@ -17,6 +17,7 @@ final class AgentClient: ObservableObject {
         case sessionId(String)
         case chunk(String)
         case tool(name: String, label: String)
+        case question(QuestionPrompt)
         case done(response: String)
         case cancelled
         case error(String)
@@ -87,6 +88,18 @@ final class AgentClient: ObservableObject {
 
     func interrupt(query: String) async {
         await sendControl(["query": query, "interrupt": true])
+    }
+
+    /// Answer an AskUserQuestion prompt. Rides the live query connection so the
+    /// daemon can match it to the parked turn. answers: question text -> label(s).
+    func sendAnswer(requestId: String, answers: [String: String]) async {
+        await sendControl(["answer": ["request_id": requestId, "answers": answers]])
+    }
+
+    /// Decode the wire `questions` array (array of dicts) into typed items.
+    private func decodeQuestions(_ raw: Any?) -> [QuestionItem] {
+        guard let raw, let data = try? JSONSerialization.data(withJSONObject: raw) else { return [] }
+        return (try? JSONDecoder().decode([QuestionItem].self, from: data)) ?? []
     }
 
     // MARK: uploads
@@ -189,6 +202,13 @@ final class AgentClient: ObservableObject {
                 if let tool = obj["tool"] as? String {
                     let label = (obj["label"] as? String) ?? ""
                     yield(.tool(name: tool, label: label))
+                }
+                // AskUserQuestion: park here until the user answers. The reply
+                // goes back via sendAnswer on this same connection; the host then
+                // resumes streaming chunks/done. Does NOT terminate the loop.
+                if let q = obj["question"] as? [String: Any],
+                   let rid = q["request_id"] as? String {
+                    yield(.question(QuestionPrompt(id: rid, questions: decodeQuestions(q["questions"]))))
                 }
                 if let chunk = obj["chunk"] as? String, !chunk.isEmpty {
                     yield(.chunk(chunk))
