@@ -30,6 +30,7 @@ Spotlight/
 
 ## Conventions
 
+- **Bump the build number on every push that ships iOS changes.** Before committing/pushing any change under `spotlight-ios/` that affects the built app (Swift, assets, Info.plist, pbxproj), increment `CFBundleVersion` in `Spotlight/Info.plist` by 1, and keep both `CURRENT_PROJECT_VERSION` values in `Spotlight.xcodeproj/project.pbxproj` (Debug + Release configs) in sync with it. Leave `MARKETING_VERSION` / `CFBundleShortVersionString` alone unless cutting a real version release. Doc-only edits (like this file) don't count.
 - **No new files at root.** Models go in `Models/`, services in `Services/`, views in `Views/`. When adding files, also add them to `Spotlight.xcodeproj/project.pbxproj` — there are no folder references, only group entries with explicit file refs. Add a `PBXFileReference`, a `PBXBuildFile`, a child entry in the right `PBXGroup`, and a row in `70372293…/Sources` (or `46EA6DC…/Resources` for assets/plists).
 - **Generate new UUIDs** with `python3 -c "import uuid; print(uuid.uuid4().hex[:24].upper())"`. Don't reuse existing ones.
 - **iOS 17+ only.** Use `.onChange(of:_:)` two-param form, `PhotosPicker`, `@Observable`/`@StateObject`, `LabeledContent`, etc.
