@@ -146,7 +146,7 @@ function killTab(tabId) {
   if (aq) {
     rejectPendingForTab(tabId, 'cancelled');
     try { aq.aborter?.abort(); } catch {}
-    try { aq.q?.interrupt?.(); } catch {}
+    try { Promise.resolve(aq.q?.interrupt?.()).catch(() => {}); } catch {}
     clearTimeout(aq.timer);
     activeQueries.delete(tabId);
   }
@@ -275,9 +275,19 @@ const server = net.createServer((socket) => {
       // re-spawn naturally --resumes the same conversation.
       if (msg.interrupt === true && activeQueries.has(tabId)) {
         log(`interrupt requested for ${tabId} — swapping query`);
-        killTab(tabId);
-        // brief delay so the SIGTERM is processed before respawning
-        setTimeout(() => runQuery(tabId, socket, msg.query), 80);
+        const aq = activeQueries.get(tabId);
+        // Graceful swap: mark the in-flight query self-aborted and hand it the
+        // follow-up to respawn once it has ACTUALLY unwound. The respawn is
+        // driven by the old query's catch/normal-end (see doSwap in runQuery),
+        // not a blind timer, so (a) the old stream can't leak an error/done
+        // onto the shared socket and (b) the captured session uuid is preserved
+        // — the swapped query --resumes the same conversation.
+        aq.selfAborted = true;
+        aq.pendingSwap = { socket, query: msg.query };
+        rejectPendingForTab(tabId, 'cancelled');
+        clearTimeout(aq.timer);
+        try { aq.aborter?.abort(); } catch {}
+        try { Promise.resolve(aq.q?.interrupt?.()).catch(() => {}); } catch {}
         continue;
       }
       if (activeQueries.has(tabId)) {
@@ -395,24 +405,41 @@ function runQuery(tabId, socket, query) {
     },
   });
 
-  // True only when WE aborted (cancel/interrupt/timeout) — distinguishes an
-  // expected unwind from a genuine SDK error in the catch below.
-  let selfAborted = false;
+  // selfAborted: true only when WE aborted (cancel/interrupt/timeout) —
+  // distinguishes an expected unwind from a genuine SDK error in the catch.
+  // pendingSwap: set by the interrupt handler with the follow-up to run once
+  // this query has unwound. Both live on the slot so the interrupt handler
+  // (which holds the slot, not this closure) can mutate them.
+  const slot = { socket, q, timer: null, aborter, selfAborted: false, pendingSwap: null };
   const timer = setTimeout(() => {
     log(`[${tabId}] query timeout`);
-    selfAborted = true;
+    slot.selfAborted = true;
     try { aborter.abort(); } catch {}
-    try { q.interrupt?.(); } catch {}
+    try { Promise.resolve(q.interrupt?.()).catch(() => {}); } catch {}
     finishQuery(tabId, { error: `Timed out after ${QUERY_TIMEOUT_MS / 1000}s` });
   }, QUERY_TIMEOUT_MS);
+  slot.timer = timer;
 
-  activeQueries.set(tabId, { socket, q, timer, aborter });
+  activeQueries.set(tabId, slot);
 
   // ownsSlot: an interrupt/cancel may have replaced this tab's slot with a newer
   // query (or torn it down). Guard every socket write / finish on still owning it.
   const ownsSlot = () => {
     const owner = activeQueries.get(tabId);
     return owner && owner.q === q;
+  };
+
+  // doSwap: respawn the interrupt's follow-up after this query has fully
+  // unwound. Release the slot first so the new runQuery can claim it; the
+  // session uuid captured in tabSession (below) makes it resume the same
+  // conversation. The follow-up streams back on the same socket, so the
+  // client sees one continuous turn rather than a torn-down instance.
+  const doSwap = () => {
+    const sw = slot.pendingSwap;
+    slot.pendingSwap = null;
+    activeQueries.delete(tabId);
+    if (sw && !sw.socket.destroyed) runQuery(tabId, sw.socket, sw.query);
+    else processQueue(tabId);
   };
 
   (async () => {
@@ -484,14 +511,19 @@ function runQuery(tabId, socket, query) {
       // Generator finished normally.
       if (!ownsSlot()) return;
       clearTimeout(timer);
+      // An interrupt may have ended the stream cleanly — swap to the follow-up
+      // instead of emitting this (now-stale) turn's final result.
+      if (slot.pendingSwap) return doSwap();
       if (finalResult?.error) finishQuery(tabId, { error: finalResult.error });
       else if (finalResult?.response !== undefined) finishQuery(tabId, { chunk: '', response: finalResult.response, done: true });
       else finishQuery(tabId, { chunk: '', response: collected.trim(), done: true });
     } catch (err) {
-      // Aborts from interrupt/cancel/timeout land here. If we triggered the abort
-      // or a newer query owns the slot, this is an expected unwind — stay quiet.
+      // Aborts from interrupt/cancel/timeout land here. An interrupt swap takes
+      // priority: respawn the follow-up. Otherwise, if we triggered the abort or
+      // a newer query owns the slot, this is an expected unwind — stay quiet.
       clearTimeout(timer);
-      if (selfAborted || !ownsSlot()) return;
+      if (slot.pendingSwap) return doSwap();
+      if (slot.selfAborted || !ownsSlot()) return;
       finishQuery(tabId, { error: `claude error: ${err?.message || String(err)}` });
     }
   })();
@@ -521,9 +553,21 @@ function shutdown(sig) {
   try { fs.unlinkSync(SOCKET_PATH); } catch {}
   for (const aq of activeQueries.values()) {
     try { aq.aborter?.abort(); } catch {}
-    try { aq.q?.interrupt?.(); } catch {}
+    try { Promise.resolve(aq.q?.interrupt?.()).catch(() => {}); } catch {}
   }
   setTimeout(() => process.exit(0), 500);
 }
+// An always-on daemon must never die from one query's stray async error. The
+// Agent SDK can surface out-of-band rejections/errors on abort or interrupt
+// (e.g. q.interrupt() rejecting in single-message mode, or the child stream
+// erroring after we kill it). Without these, Node's default terminates the
+// process — dropping the socket and every active tab, then crash-looping under
+// launchd. Log and keep serving; real bugs still show up in the log.
+process.on('unhandledRejection', (reason) => {
+  log('unhandledRejection (kept alive):', reason instanceof Error ? (reason.stack || reason.message) : String(reason));
+});
+process.on('uncaughtException', (err) => {
+  log('uncaughtException (kept alive):', err?.stack || err?.message || String(err));
+});
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
