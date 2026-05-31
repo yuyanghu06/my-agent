@@ -4,6 +4,7 @@ import SwiftUI
 /// the canvas, a "+ New" action, swipe-to-delete preserved via List.
 struct SessionsView: View {
     @EnvironmentObject var store: SessionStore
+    @EnvironmentObject var agent: AgentClient
     var onPick: (ChatSession) -> Void
     var onNew: () -> Void
     @Environment(\.dismiss) private var dismiss
@@ -34,7 +35,8 @@ struct SessionsView: View {
                             .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
                     }
                     .onDelete { idxs in
-                        for i in idxs { store.remove(store.sessions[i].id) }
+                        let ids = idxs.map { store.sessions[$0].id }
+                        Task { for id in ids { await store.remove(id, via: agent) } }
                     }
                 }
                 .listStyle(.plain)

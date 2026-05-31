@@ -140,6 +140,61 @@ final class AgentClient: ObservableObject {
         throw AgentError.wireProtocol(obj["error"] as? String ?? "upload failed")
     }
 
+    // MARK: shared session store (host-backed)
+
+    /// Fetch the host's shared session list. Returns the raw host dicts
+    /// (schema: id, savedAt, title, preview, turns, claudeSessionId) or nil if
+    /// the host is unreachable, so the caller can fall back to its cache.
+    func fetchSessions() async -> [[String: Any]]? {
+        guard settings.isValid else { return nil }
+        do {
+            let (conn, _) = try await openAuthedConnection()
+            defer { conn.cancel() }
+            // Request slim mode — the host strips heavy per-turn fields
+            // (base64 images dominate; the full file can be tens of MB) and
+            // returns only query + fullText, which is all the phone renders.
+            guard let line = encodeLine(["sessions_read": "slim"]) else { return nil }
+            try await sendData(line, on: conn)
+            let reply = try await readLine(on: conn, timeout: 15)
+            guard let obj = try? JSONSerialization.jsonObject(with: reply) as? [String: Any],
+                  let raw = obj["sessions"] as? String,
+                  let data = raw.data(using: .utf8),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else { return nil }
+            return arr
+        } catch {
+            return nil
+        }
+    }
+
+    /// Merge one session into the host list (host preserves fields we omit, so
+    /// this never clobbers a desktop entry's richer data). Returns true on ok.
+    @discardableResult
+    func upsertSession(_ session: [String: Any]) async -> Bool {
+        await sessionOp(["sessions_upsert": session])
+    }
+
+    /// Remove one session from the host list by id.
+    @discardableResult
+    func deleteSession(id: String) async -> Bool {
+        await sessionOp(["sessions_delete": id])
+    }
+
+    private func sessionOp(_ json: [String: Any]) async -> Bool {
+        guard settings.isValid else { return false }
+        do {
+            let (conn, _) = try await openAuthedConnection()
+            defer { conn.cancel() }
+            guard let line = encodeLine(json) else { return false }
+            try await sendData(line, on: conn)
+            let reply = try await readLine(on: conn, timeout: 15)
+            let obj = try? JSONSerialization.jsonObject(with: reply) as? [String: Any]
+            return (obj?["sessions_ok"] as? Bool) ?? false
+        } catch {
+            return false
+        }
+    }
+
     // MARK: query driver
 
     private func run(query: String, resumeUuid: String?, fresh: Bool) async {

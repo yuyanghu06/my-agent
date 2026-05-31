@@ -33,6 +33,10 @@ struct ChatView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .task { await sessions.refresh(via: agent) }
+            .onChange(of: showSessions) { _, shown in
+                if shown { Task { await sessions.refresh(via: agent) } }
+            }
             .sheet(isPresented: $showSettings) {
                 NavigationStack { SettingsView() }
             }
@@ -97,6 +101,7 @@ struct ChatView: View {
                 }
                 .padding(.vertical, 8)
             }
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: turns.last?.fullText) { _, _ in
                 if let last = turns.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
             }
@@ -217,11 +222,20 @@ struct ChatView: View {
     }
 
     private func resume(_ s: ChatSession) {
-        // Hand the daemon the UUID; clear local turns since the transcript
-        // lives in claude's session store, not on the phone.
+        // Hand the daemon the UUID so the NEXT turn continues this claude
+        // conversation, and rebuild the visible transcript from the host's
+        // stored turns so the full history shows immediately.
         activeSession = s
         capturedSessionId = s.claudeSessionId
-        turns = []
+        turns = sessions.history(for: s.id).map { pair in
+            var t = Turn.user(query: pair.query)
+            if !pair.fullText.isEmpty {
+                t.fullText = pair.fullText
+                t.segments = [.text(pair.fullText)]
+            }
+            t.done = true
+            return t
+        }
         if let uuid = s.claudeSessionId {
             Task { await agent.resume(uuid: uuid) }
         }
@@ -236,6 +250,10 @@ struct ChatView: View {
         }
         activeSession.preview = String(turn.fullText.prefix(120))
         activeSession.lastTouched = Date()
-        sessions.upsert(activeSession)
+        // Ship the (query, response) pairs so this session is resumable on the
+        // desktop too — they get merged into the host's shared sessions.json.
+        let pairs = turns.map { ["query": $0.query, "fullText": $0.fullText] }
+        let snapshot = activeSession
+        Task { await sessions.upsert(snapshot, turns: pairs, via: agent) }
     }
 }

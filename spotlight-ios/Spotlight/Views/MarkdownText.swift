@@ -57,9 +57,21 @@ struct MarkdownText: View {
 
     private enum Block { case text(String); case code(String?, String) }
 
+    /// Turn the internal "[user injected mid-stream]: X" marker (embedded in a
+    /// resumed turn's fullText) into a markdown blockquote so it reads as a
+    /// quoted user aside instead of a raw internal tag.
+    private static func cleanInjectionMarkers(_ s: String) -> String {
+        guard s.contains("[user injected mid-stream]:") else { return s }
+        return s.replacingOccurrences(
+            of: #"\n*\[user injected mid-stream\]:\s*"#,
+            with: "\n\n> ",
+            options: .regularExpression
+        )
+    }
+
     private var blocks: [Block] {
         var out: [Block] = []
-        var lines = raw.components(separatedBy: "\n").makeIterator()
+        var lines = Self.cleanInjectionMarkers(raw).components(separatedBy: "\n").makeIterator()
         var textBuf = ""
         var current = lines.next()
         while let line = current {
