@@ -291,6 +291,28 @@ fn handle_host_conn(mut tcp: TcpStream, expected_token: &str) -> Result<(), Stri
                     handle_upload(up, &mut intercept_writer);
                     continue;
                 }
+                // Session-list ops are served from the host's own
+                // spotlight-sessions/sessions.json so every client shares one
+                // list. Intercepted here, never forwarded to the daemon.
+                if let Some(sr) = v.get("sessions_read") {
+                    // { "sessions_read": "slim" } or { ..., "slim": true } -> slim
+                    let slim = sr.as_str() == Some("slim")
+                        || v.get("slim").and_then(|b| b.as_bool()).unwrap_or(false);
+                    handle_sessions_read(slim, &mut intercept_writer);
+                    continue;
+                }
+                if let Some(j) = v.get("sessions_write") {
+                    handle_sessions_write(j, &mut intercept_writer);
+                    continue;
+                }
+                if let Some(j) = v.get("sessions_upsert") {
+                    handle_sessions_upsert(j, &mut intercept_writer);
+                    continue;
+                }
+                if let Some(j) = v.get("sessions_delete") {
+                    handle_sessions_delete(j, &mut intercept_writer);
+                    continue;
+                }
             }
             if writeln!(daemon_writer, "{}", line).is_err() {
                 break;
@@ -888,23 +910,212 @@ async fn save_file(name: String, data_url: String) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
-async fn read_sessions() -> Result<String, String> {
+// --- Host-side session store handlers (intercepted in handle_host_conn) ---
+// The host owns the canonical list at SESSIONS_FILE; remote clients read/write
+// it over the wire so host + all clients share exactly one session list.
+
+fn read_sessions_file() -> String {
     let path = std::path::PathBuf::from(SESSIONS_FILE);
     if !path.exists() {
-        return Ok("[]".to_string());
+        return "[]".to_string();
     }
-    std::fs::read_to_string(&path).map_err(|e| format!("read failed: {}", e))
+    std::fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string())
 }
 
-#[tauri::command]
-async fn write_sessions(json: String) -> Result<(), String> {
+fn write_sessions_file(json: &str) -> Result<(), String> {
     let path = std::path::PathBuf::from(SESSIONS_FILE);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {}", e))?;
     }
-    std::fs::write(&path, json).map_err(|e| format!("write failed: {}", e))?;
-    Ok(())
+    std::fs::write(&path, json).map_err(|e| format!("write failed: {}", e))
+}
+
+fn handle_sessions_read(slim: bool, tcp_writer: &mut TcpStream) {
+    // Slim mode strips the heavy per-turn fields (images/pastes/files — base64
+    // image data dominates the file) and keeps only query + fullText, so a
+    // lightweight client (iOS) can fetch the list + transcript text without
+    // pulling tens of MB. Full mode returns the file verbatim (desktop client).
+    let contents = if slim {
+        slim_sessions(&read_sessions_file())
+    } else {
+        read_sessions_file()
+    };
+    let _ = writeln!(tcp_writer, "{}", serde_json::json!({ "sessions": contents }));
+}
+
+/// Strip turns down to { id, query, fullText } and drop session-level heavy
+/// fields, so the serialized list is small enough to ship over the wire.
+fn slim_sessions(raw: &str) -> String {
+    let mut list: Vec<serde_json::Value> = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return "[]".to_string(),
+    };
+    for s in list.iter_mut() {
+        if let Some(obj) = s.as_object_mut() {
+            if let Some(turns) = obj.get_mut("turns").and_then(|t| t.as_array_mut()) {
+                for t in turns.iter_mut() {
+                    if let Some(to) = t.as_object_mut() {
+                        let id = to.remove("id");
+                        let query = to.remove("query");
+                        let full = to.remove("fullText");
+                        to.clear();
+                        if let Some(v) = id { to.insert("id".into(), v); }
+                        if let Some(v) = query { to.insert("query".into(), v); }
+                        if let Some(v) = full { to.insert("fullText".into(), v); }
+                    }
+                }
+            }
+        }
+    }
+    serde_json::Value::Array(list).to_string()
+}
+
+// Serializes all read-modify-write access to the sessions file so a desktop
+// whole-list write and an iOS per-session merge can't tear each other.
+static SESSIONS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+fn sessions_lock() -> &'static Mutex<()> {
+    SESSIONS_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn handle_sessions_write(payload: &serde_json::Value, tcp_writer: &mut TcpStream) {
+    // Whole-list replace (used by the desktop client). Accept a JSON string or
+    // a raw array.
+    let json = match payload {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let _guard = sessions_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let reply = match write_sessions_file(&json) {
+        Ok(()) => serde_json::json!({ "sessions_ok": true }),
+        Err(e) => serde_json::json!({ "sessions_ok": false, "error": e }),
+    };
+    let _ = writeln!(tcp_writer, "{}", reply);
+}
+
+/// Merge one session into the host list, matched by `id` (falling back to
+/// `claudeSessionId`). Existing fields the client omits — e.g. the desktop's
+/// rendered `turns` — are preserved; an unknown session is prepended. Lets iOS
+/// add or edit a session without clobbering richer entries.
+fn handle_sessions_upsert(payload: &serde_json::Value, tcp_writer: &mut TcpStream) {
+    let _guard = sessions_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let mut list: Vec<serde_json::Value> =
+        serde_json::from_str(&read_sessions_file()).unwrap_or_default();
+    let id = payload.get("id").and_then(|v| v.as_str());
+    let csid = payload.get("claudeSessionId").and_then(|v| v.as_str());
+    let pos = list.iter().position(|e| {
+        (id.is_some() && e.get("id").and_then(|v| v.as_str()) == id)
+            || (csid.is_some() && csid == e.get("claudeSessionId").and_then(|v| v.as_str()))
+    });
+    match pos {
+        Some(i) => {
+            if let (Some(existing), Some(incoming)) =
+                (list[i].as_object_mut(), payload.as_object())
+            {
+                for (k, v) in incoming {
+                    existing.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        None => list.insert(0, payload.clone()),
+    }
+    let json = serde_json::Value::Array(list).to_string();
+    let reply = match write_sessions_file(&json) {
+        Ok(()) => serde_json::json!({ "sessions_ok": true, "sessions": json }),
+        Err(e) => serde_json::json!({ "sessions_ok": false, "error": e }),
+    };
+    let _ = writeln!(tcp_writer, "{}", reply);
+}
+
+/// Remove one session by id. Payload may be the id string or `{ "id": "..." }`.
+fn handle_sessions_delete(payload: &serde_json::Value, tcp_writer: &mut TcpStream) {
+    let _guard = sessions_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let mut list: Vec<serde_json::Value> =
+        serde_json::from_str(&read_sessions_file()).unwrap_or_default();
+    let id = payload
+        .as_str()
+        .map(|s| s.to_string())
+        .or_else(|| payload.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()));
+    if let Some(id) = id {
+        list.retain(|e| e.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
+    }
+    let json = serde_json::Value::Array(list).to_string();
+    let reply = match write_sessions_file(&json) {
+        Ok(()) => serde_json::json!({ "sessions_ok": true, "sessions": json }),
+        Err(e) => serde_json::json!({ "sessions_ok": false, "error": e }),
+    };
+    let _ = writeln!(tcp_writer, "{}", reply);
+}
+
+/// In client mode, run a one-shot session request against the remote host
+/// (auth, send the request, read one reply line). Returns None when not in
+/// client mode (caller falls back to the local file).
+fn remote_sessions_request(req: serde_json::Value) -> Option<Result<String, String>> {
+    let cfg = current_client_config()?;
+    Some((|| -> Result<String, String> {
+        let addr = format!("{}:{}", cfg.host, cfg.port);
+        let sock = addr
+            .to_socket_addrs()
+            .map_err(|e| format!("bad host {}: {}", addr, e))?
+            .next()
+            .ok_or_else(|| format!("no address for {}", addr))?;
+        let stream = TcpStream::connect_timeout(&sock, Duration::from_secs(8))
+            .map_err(|e| format!("cannot reach host {}: {}", addr, e))?;
+        let _ = stream.set_nodelay(true);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(8)));
+        let mut writer = stream.try_clone().map_err(|e| format!("clone: {}", e))?;
+        writeln!(writer, "{}", serde_json::json!({ "auth": cfg.token }))
+            .map_err(|e| format!("auth write: {}", e))?;
+        writeln!(writer, "{}", req).map_err(|e| format!("req write: {}", e))?;
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| format!("read reply: {}", e))?;
+            if n == 0 {
+                return Err("host closed connection".into());
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            return Ok(line.trim().to_string());
+        }
+    })())
+}
+
+#[tauri::command]
+async fn read_sessions() -> Result<String, String> {
+    if let Some(res) = remote_sessions_request(serde_json::json!({ "sessions_read": true })) {
+        let reply = res?;
+        let v: serde_json::Value =
+            serde_json::from_str(&reply).map_err(|e| format!("bad host reply: {}", e))?;
+        return Ok(v
+            .get("sessions")
+            .and_then(|s| s.as_str())
+            .unwrap_or("[]")
+            .to_string());
+    }
+    Ok(read_sessions_file())
+}
+
+#[tauri::command]
+async fn write_sessions(json: String) -> Result<(), String> {
+    if let Some(res) = remote_sessions_request(serde_json::json!({ "sessions_write": json })) {
+        let reply = res?;
+        let v: serde_json::Value =
+            serde_json::from_str(&reply).map_err(|e| format!("bad host reply: {}", e))?;
+        if v.get("sessions_ok").and_then(|b| b.as_bool()).unwrap_or(false) {
+            return Ok(());
+        }
+        return Err(v
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("remote write failed")
+            .to_string());
+    }
+    let _guard = sessions_lock().lock().unwrap_or_else(|e| e.into_inner());
+    write_sessions_file(&json)
 }
 
 // ============================================================
