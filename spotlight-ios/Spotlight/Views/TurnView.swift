@@ -1,5 +1,51 @@
 import SwiftUI
 
+// MARK: - Slate Liquid Glass design tokens (mirror the Figma board)
+
+extension Color {
+    static let glassInk = Color(red: 0.102, green: 0.090, blue: 0.078)       // #1A1714
+    static let glassSecondary = Color(red: 0.431, green: 0.416, blue: 0.392) // #6E6A64
+    static let glassCanvas = Color(red: 0.925, green: 0.918, blue: 0.898)    // #ECEAE5
+    static let glassAccent = Color(red: 0.267, green: 0.333, blue: 0.478)    // #44557A
+    static let glassAccent2 = Color(red: 0.576, green: 0.643, blue: 0.761)   // #93A4C2
+    static let glassGraphite = Color(red: 0.227, green: 0.212, blue: 0.192)  // #3A3631
+}
+
+/// Slate CTA gradient (#50628C → #41527A) — matches the Figma send button / buttons.
+let glassButtonGradient = LinearGradient(
+    colors: [Color(red: 0.314, green: 0.384, blue: 0.549),
+             Color(red: 0.255, green: 0.322, blue: 0.478)],
+    startPoint: .top, endPoint: .bottom)
+
+/// The brand aperture ring mark.
+struct ApertureMark: View {
+    var size: CGFloat = 22
+    var body: some View {
+        Circle()
+            .stroke(Color.glassGraphite, lineWidth: max(2, size * 0.11))
+            .frame(width: size, height: size)
+    }
+}
+
+extension View {
+    /// White glass surface with a hairline border, matching the Figma cards.
+    func glassCard(_ radius: CGFloat = 14) -> some View {
+        self
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .stroke(Color.glassInk.opacity(0.08), lineWidth: 1)
+            )
+    }
+    /// Small uppercase section label (HOST, SAVED, …).
+    func sectionLabelStyle() -> some View {
+        self.font(.system(size: 11, weight: .bold))
+            .tracking(0.8)
+            .foregroundStyle(Color.glassSecondary)
+    }
+}
+
 /// Renders one user/assistant pair. The user prompt sits in a tinted
 /// bubble; tools appear as muted system rows; assistant text flows in
 /// markdown blocks beneath, with a typing indicator while in flight.
@@ -29,44 +75,54 @@ struct TurnView: View {
         .padding(.vertical, 10)
     }
 
+    // Right-aligned slate-tint bubble — matches the Figma user bubble.
     private var userBubble: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !turn.images.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(turn.images) { img in
-                            if let data = img.previewData, let ui = UIImage(data: data) {
-                                Image(uiImage: ui)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 84, height: 84)
-                                    .clipped()
-                                    .cornerRadius(8)
+        HStack {
+            Spacer(minLength: 36)
+            VStack(alignment: .leading, spacing: 6) {
+                if !turn.images.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(turn.images) { img in
+                                if let data = img.previewData, let ui = UIImage(data: data) {
+                                    Image(uiImage: ui)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 84, height: 84)
+                                        .clipped()
+                                        .cornerRadius(8)
+                                }
                             }
                         }
                     }
                 }
+                Text(turn.query.isEmpty ? "(no text)" : turn.query)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Color.glassInk)
+                    .textSelection(.enabled)
             }
-            Text(turn.query.isEmpty ? "(no text)" : turn.query)
-                .font(.callout.weight(.medium))
-                .textSelection(.enabled)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.glassAccent.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.10))
-        .cornerRadius(10)
     }
 
+    // Slate tool chip — dot + name/label on a tint pill, matches the Figma.
     private func toolRow(name: String, label: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.right")
-                .imageScale(.small)
-                .foregroundStyle(.tertiary)
-            Text(name).font(.caption.monospaced()).foregroundStyle(.secondary)
-            if !label.isEmpty {
-                Text(label).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+        HStack {
+            HStack(spacing: 6) {
+                Circle().fill(Color.glassAccent).frame(width: 6, height: 6)
+                Text(label.isEmpty ? name : "\(name)  \(label)")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Color.glassSecondary)
+                    .lineLimit(1)
             }
-            Spacer()
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Color.glassInk.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            Spacer(minLength: 0)
         }
     }
 }
@@ -196,25 +252,78 @@ struct QuestionCard: View {
     }
 }
 
+/// Three pulsing dots shown while the assistant is generating. Matches the
+/// desktop `.typing` indicator exactly: 6px slate dots, gap 4, a 1.2s ease-in-out
+/// pulse staggered 0.18s per dot (rise to peak at 40% of the cycle, fall to low
+/// by 80%, hold).
+///
+/// Driven by `TimelineView(.animation)` rather than `withAnimation` on a @State:
+/// the old version animated a scalar `t` 0→1 and derived opacity from it through
+/// sin(), but SwiftUI only interpolates the body's start/end values — and since
+/// the function is periodic in `t`, t=0 and t=1 produced identical opacities, so
+/// the dots never moved. TimelineView re-evaluates the body every frame, so the
+/// curve actually renders.
 struct TypingDots: View {
-    @State private var t: Double = 0
+    private let period = 1.2
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3) { i in
-                Circle()
-                    .frame(width: 5, height: 5)
-                    .opacity(opacity(for: i))
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { i in
+                    let l = level(t, i)
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                        .scaleEffect(0.85 + 0.25 * l)
+                        .opacity(0.3 + 0.7 * l)
+                }
             }
-        }
-        .foregroundStyle(.secondary)
-        .onAppear {
-            withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
-                t = 1
-            }
+            .padding(.vertical, 4)
         }
     }
-    private func opacity(for i: Int) -> Double {
-        let phase = (t + Double(i) * 0.33).truncatingRemainder(dividingBy: 1)
-        return 0.3 + 0.7 * sin(phase * .pi)
+    private func level(_ t: Double, _ i: Int) -> Double {
+        var p = ((t - Double(i) * 0.18) / period).truncatingRemainder(dividingBy: 1)
+        if p < 0 { p += 1 }
+        if p < 0.4 { return ease(p / 0.4) }          // rise
+        if p < 0.8 { return 1 - ease((p - 0.4) / 0.4) } // fall
+        return 0                                      // hold low
+    }
+    private func ease(_ x: Double) -> Double { x * x * (3 - 2 * x) } // smoothstep
+}
+
+/// Thin streaming progress bar. Matches the desktop `.status-line.active`: a 3px
+/// `--tint` track with a 35%-wide slate-gradient that slides left→right over a
+/// 1.5s ease-in-out loop. Reserves its 3px height even when idle so the composer
+/// doesn't jump when streaming starts.
+struct StatusSweep: View {
+    let active: Bool
+    var body: some View {
+        Rectangle()
+            .fill(active ? Color.primary.opacity(0.10) : Color.clear)
+            .frame(height: 3)
+            .overlay {
+                if active {
+                    GeometryReader { geo in
+                        let w = geo.size.width
+                        let sweepW = w * 0.35
+                        TimelineView(.animation) { timeline in
+                            let t = timeline.date.timeIntervalSinceReferenceDate
+                            let p = ease((t / 1.5).truncatingRemainder(dividingBy: 1))
+                            LinearGradient(
+                                colors: [Color.accentColor,
+                                         Color(red: 0.576, green: 0.643, blue: 0.761)],
+                                startPoint: .leading, endPoint: .trailing
+                            )
+                            .frame(width: sweepW)
+                            .offset(x: -sweepW + (w + sweepW) * p)
+                        }
+                    }
+                }
+            }
+            .clipped()
+            .animation(.easeInOut(duration: 0.2), value: active)
+    }
+    private func ease(_ x: Double) -> Double {
+        x < 0.5 ? 2 * x * x : 1 - pow(-2 * x + 2, 2) / 2 // ease-in-out
     }
 }

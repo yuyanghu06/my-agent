@@ -9,7 +9,7 @@ Spotlight.xcodeproj/             Hand-written pbxproj (objectVersion 56).
 Spotlight/
 ├── SpotlightApp.swift           @main App. Owns AgentClient + SessionStore as @StateObjects.
 ├── Info.plist                   Privacy strings (camera, photos, mic, speech, local network).
-├── Assets.xcassets/             AppIcon (1024, warm-orange aperture) + AccentColor (#C85F19, matches desktop --accent).
+├── Assets.xcassets/             AppIcon (1024, slate Concept-C aperture) + AccentColor (#44557A, matches desktop --accent slate-blue).
 ├── Models/
 │   ├── ClientSettings.swift     UserDefaults-backed host/port/token; share-URL parser.
 │   ├── Turn.swift               One user/assistant pair; segments are text or tool.

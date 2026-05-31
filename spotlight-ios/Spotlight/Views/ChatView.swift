@@ -15,44 +15,24 @@ struct ChatView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                conversation
-                Divider()
-                ComposerBar(
-                    text: $draft,
-                    pendingImages: $pendingImages,
-                    isStreaming: agent.isStreaming,
-                    canSend: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || !pendingImages.isEmpty,
-                    onSend: send,
-                    onCancel: cancel
-                )
-            }
-            .navigationTitle(activeSession.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showSessions = true
-                    } label: {
-                        Image(systemName: "list.bullet.rectangle")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        newSession()
-                    } label: {
-                        Image(systemName: "square.and.pencil")
-                    }
+            ZStack(alignment: .top) {
+                Color.glassCanvas.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    topBar
+                    conversation
+                    StatusSweep(active: agent.isStreaming)
+                    ComposerBar(
+                        text: $draft,
+                        pendingImages: $pendingImages,
+                        isStreaming: agent.isStreaming,
+                        canSend: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || !pendingImages.isEmpty,
+                        onSend: send,
+                        onCancel: cancel
+                    )
                 }
             }
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showSettings) {
                 NavigationStack { SettingsView() }
             }
@@ -64,6 +44,34 @@ struct ChatView: View {
                     )
                 }
             }
+        }
+    }
+
+    // Custom top bar — aperture mark left, centered title, ⋯ menu right.
+    private var topBar: some View {
+        ZStack {
+            Text("Spotlight")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.glassInk)
+            HStack {
+                ApertureMark(size: 22)
+                Spacer()
+                Menu {
+                    Button { newSession() } label: { Label("New session", systemImage: "square.and.pencil") }
+                    Button { showSessions = true } label: { Label("Sessions", systemImage: "list.bullet.rectangle") }
+                    Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.glassSecondary)
+                        .frame(width: 28, height: 28)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.glassInk.opacity(0.08)).frame(height: 1)
         }
     }
 
@@ -99,17 +107,16 @@ struct ChatView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 36))
-                .foregroundStyle(.tertiary)
-            Text("Type, paste a photo, or hold the mic.")
-                .foregroundStyle(.secondary)
+        VStack(spacing: 14) {
+            ApertureMark(size: 40)
+            Text("Ask anything, paste a photo, or hold the mic.")
+                .font(.system(size: 15))
+                .foregroundStyle(Color.glassSecondary)
                 .multilineTextAlignment(.center)
             if !agent.settings.isValid {
-                Text("Open Settings and paste your Mac's share URL to connect.")
+                Text("Open the ⋯ menu → Settings and paste your Mac's share URL to connect.")
                     .font(.footnote)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.glassAccent)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
             }

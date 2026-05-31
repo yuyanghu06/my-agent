@@ -2,9 +2,12 @@ import SwiftUI
 
 /// Client-only settings — host, port, token, plus a paste-from-clipboard
 /// helper that recognizes the spotlight://host:port?token=... share URLs
-/// emitted by the Mac's spotlight host card.
+/// emitted by the Mac's spotlight host card. Styled to match the Figma
+/// slate-glass board (the phone is client-only, so there is no Host-mode
+/// toggle — that lives on the desktop app).
 struct SettingsView: View {
     @EnvironmentObject var agent: AgentClient
+    @Environment(\.dismiss) private var dismiss
     @State private var hostDraft: String = ""
     @State private var portDraft: String = "47330"
     @State private var tokenDraft: String = ""
@@ -12,71 +15,94 @@ struct SettingsView: View {
     @State private var testing = false
 
     var body: some View {
-        Form {
-            Section("Host") {
-                LabeledContent("Host") {
-                    TextField("hostname or IP", text: $hostDraft)
-                        .multilineTextAlignment(.trailing)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                // CONNECTION card
+                Text("CONNECTION").sectionLabelStyle().padding(.leading, 4)
+                VStack(spacing: 14) {
+                    field("HOST", text: $hostDraft, placeholder: "hostname or IP", mono: false, number: false)
+                    field("PORT", text: $portDraft, placeholder: "47330", mono: false, number: true)
+                    field("TOKEN", text: $tokenDraft, placeholder: "paste host token", mono: true, number: false)
                 }
-                LabeledContent("Port") {
-                    TextField("47330", text: $portDraft)
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.numberPad)
-                }
-                LabeledContent("Token") {
-                    TextField("paste host token", text: $tokenDraft)
-                        .multilineTextAlignment(.trailing)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
-                }
-                Button {
-                    pasteShareURL()
-                } label: {
+                .padding(16)
+                .glassCard()
+
+                // Paste share URL — tinted secondary action
+                Button { pasteShareURL() } label: {
                     Label("Paste share URL", systemImage: "doc.on.clipboard")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Color.glassAccent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.glassAccent.opacity(0.10))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-            }
+                .buttonStyle(.plain)
 
-            Section {
-                Button {
-                    save()
-                } label: {
-                    Label("Save", systemImage: "checkmark.circle.fill")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    Task { await testConnection() }
-                } label: {
-                    if testing {
-                        ProgressView()
-                    } else {
-                        Label("Test connection", systemImage: "antenna.radiowaves.left.and.right")
+                // Test connection — slate gradient CTA
+                Button { Task { await testConnection() } } label: {
+                    Group {
+                        if testing {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Test connection").font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+                        }
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(glassButtonGradient)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+                .buttonStyle(.plain)
                 .disabled(testing)
 
                 if let last = lastTestResult {
                     Text(last)
                         .font(.footnote)
-                        .foregroundStyle(last.hasPrefix("✓") ? .green : .red)
+                        .foregroundStyle(last.hasPrefix("✓") ? Color(red: 0.247, green: 0.490, blue: 0.306) : .red)
+                        .padding(.leading, 4)
                 }
-            }
 
-            Section("About") {
-                Text(
-                    "Spotlight iOS is a client for the desktop spotlight agent. "
-                    + "Enable Host mode on your Mac (Spotlight → Settings → Host) "
-                    + "and tap Paste share URL above to load the connection details."
-                )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                Text("Spotlight iOS is a client for the desktop spotlight agent. Enable Host mode on your Mac (Spotlight → Settings → Host) and tap Paste share URL above to load the connection details.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.glassSecondary)
+                    .padding(.top, 4)
+                    .padding(.horizontal, 4)
+            }
+            .padding(16)
+        }
+        .background(Color.glassCanvas)
+        .scrollContentBackground(.hidden)
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { save(); dismiss() }
+                    .foregroundStyle(Color.glassAccent)
             }
         }
-        .navigationTitle("Settings")
         .onAppear { reload() }
+    }
+
+    private func field(_ label: String, text: Binding<String>, placeholder: String, mono: Bool, number: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).sectionLabelStyle()
+            TextField(placeholder, text: text)
+                .font(.system(size: 15, design: mono ? .monospaced : .default))
+                .foregroundStyle(Color.glassInk)
+                .tint(Color.glassAccent)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(number ? .numberPad : .default)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(Color.glassInk.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.glassInk.opacity(0.08), lineWidth: 1)
+                )
+        }
     }
 
     private func reload() {
@@ -92,7 +118,6 @@ struct SettingsView: View {
             port: port,
             token: tokenDraft.trimmingCharacters(in: .whitespaces)
         )
-        lastTestResult = nil
     }
 
     private func pasteShareURL() {

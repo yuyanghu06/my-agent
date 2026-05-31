@@ -1,9 +1,10 @@
 import SwiftUI
 import PhotosUI
 
-/// Bottom composer: textarea, attach photo (library or camera), voice
-/// (hold-to-talk), send. Shows pending attachments as chips above the
-/// textarea before they get sent.
+/// Bottom composer: a white floating glass pill (matches the Figma) with the
+/// aperture mark, the text field, attach (photo library or camera), voice
+/// (hold-to-talk), and a slate-gradient send button. Pending attachments show
+/// as thumbnails above the pill before they get sent.
 struct ComposerBar: View {
     @Binding var text: String
     @Binding var pendingImages: [PendingImage]
@@ -18,7 +19,7 @@ struct ComposerBar: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             if !pendingImages.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -26,28 +27,40 @@ struct ComposerBar: View {
                             attachmentChip(p)
                         }
                     }
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 16)
                 }
             }
             if let err = voice.lastError {
                 Text(err).font(.caption2).foregroundStyle(.red)
             }
-            HStack(alignment: .bottom, spacing: 8) {
-                attachMenu
-                TextField("Ask Claude…", text: $text, axis: .vertical)
+            HStack(alignment: .center, spacing: 10) {
+                ApertureMark(size: 20)
+                TextField("Ask anything…", text: $text, axis: .vertical)
                     .lineLimit(1...6)
                     .textFieldStyle(.plain)
-                    .padding(8)
-                    .background(Color(uiColor: .secondarySystemBackground))
-                    .cornerRadius(12)
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.glassInk)
+                    .tint(Color.glassAccent)
                     .focused($focused)
+                attachMenu
                 voiceButton
                 sendButton
             }
-            .padding(.horizontal, 12)
+            .padding(.leading, 14)
+            .padding(.trailing, 8)
             .padding(.vertical, 8)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.glassInk.opacity(0.10), lineWidth: 1)
+            )
+            .shadow(color: Color.glassInk.opacity(0.12), radius: 14, y: 4)
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
         }
-        .background(.ultraThinMaterial)
+        .background(Color.glassCanvas)
         .onChange(of: photoItem) { _, newItem in
             guard let newItem else { return }
             Task { await loadPickedPhoto(newItem); photoItem = nil }
@@ -73,15 +86,15 @@ struct ComposerBar: View {
                 Label("Take Photo", systemImage: "camera")
             }
         } label: {
-            Image(systemName: "plus.circle.fill")
-                .imageScale(.large)
-                .foregroundStyle(.secondary)
+            Image(systemName: "plus")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(Color.glassSecondary)
+                .frame(width: 28, height: 28)
         }
     }
 
     private var voiceButton: some View {
         Button {
-            // toggle
             if voice.isRecording {
                 voice.stop()
                 let captured = voice.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -92,9 +105,10 @@ struct ComposerBar: View {
                 Task { await voice.start() }
             }
         } label: {
-            Image(systemName: voice.isRecording ? "waveform.circle.fill" : "mic.circle")
-                .imageScale(.large)
-                .foregroundStyle(voice.isRecording ? .red : .secondary)
+            Image(systemName: voice.isRecording ? "waveform" : "mic")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(voice.isRecording ? Color.red : Color.glassSecondary)
+                .frame(width: 28, height: 28)
                 .symbolEffect(.pulse, options: .repeating, isActive: voice.isRecording)
         }
     }
@@ -102,16 +116,23 @@ struct ComposerBar: View {
     @ViewBuilder
     private var sendButton: some View {
         if isStreaming {
-            Button(role: .destructive, action: onCancel) {
-                Image(systemName: "stop.circle.fill")
-                    .imageScale(.large)
-                    .foregroundStyle(.red)
+            Button(action: onCancel) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(Color.glassSecondary)
+                    .clipShape(Circle())
             }
         } else {
             Button(action: onSend) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .imageScale(.large)
-                    .foregroundStyle(canSend ? Color.accentColor : Color.secondary)
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(canSend ? AnyShapeStyle(glassButtonGradient)
+                                        : AnyShapeStyle(Color.glassInk.opacity(0.18)))
+                    .clipShape(Circle())
             }
             .disabled(!canSend)
         }
@@ -125,7 +146,7 @@ struct ComposerBar: View {
                     .scaledToFill()
                     .frame(width: 64, height: 64)
                     .clipped()
-                    .cornerRadius(8)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             Button {
                 pendingImages.removeAll { $0.id == p.id }
