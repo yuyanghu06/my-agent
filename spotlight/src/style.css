@@ -1,13 +1,18 @@
 /* ============================================================
    Spotlight — Neutral Editorial Liquid Glass
    Off-white canvas, white frosted glass surfaces, charcoal ink,
-   slate-blue gradient accent. Window vibrancy is applied via
-   NSVisualEffectView (Sheet, light) in main.rs; everything below
-   assumes the window backdrop is already blurred and tints over it.
+   slate-blue gradient accent. The frost itself is NATIVE: macOS Liquid
+   Glass (NSGlassEffectView on macOS 26, NSVisualEffectView fallback) is
+   applied behind the transparent webview via tauri-plugin-liquid-glass
+   (turned on in main.ts / reply.ts). Everything below assumes that glass
+   layer is already there and only paints the tint + rim highlight on top.
+   NOTE: CSS backdrop-filter can't blur the desktop through a transparent
+   window, so it is used ONLY on in-page overlays (dropdowns, toast,
+   popovers) where there IS page content behind them — never on #app.
 
-   Mirrors the Figma board "Spotlight — Orange Liquid Glass"
-   (file P5vFz9LI4XHv0FeOClmbVK), which was reskinned to this
-   neutral/slate direction. Keep the two in sync.
+   Mirrors the Figma board "Spotlight — Slate Liquid Glass"
+   (file P5vFz9LI4XHv0FeOClmbVK), neutral editorial glass + slate-blue
+   accent. Keep the two in sync.
    ============================================================ */
 :root {
   /* Ink — charcoal on a light glass surface */
@@ -36,10 +41,14 @@
 
   /* Glass material */
   --canvas: #eceae5;
+  /* A LIGHT tint painted on top of the native NSGlassEffectView frost — kept
+     translucent enough that the real frost reads through it, opaque enough to
+     keep charcoal text legible over a dark desktop. This is the "tint on top"
+     half of the pattern; the frost itself is native (see main.ts). */
   --glass-grad: linear-gradient(
     159deg,
-    rgba(252, 253, 255, 0.40) 0%,
-    rgba(235, 238, 244, 0.22) 71%
+    rgba(255, 255, 255, 0.22) 0%,
+    rgba(255, 255, 255, 0.12) 71%
   );
   --glass-solid: rgba(244, 245, 247, 0.97);
   --glass-border: rgba(255, 255, 255, 0.5);
@@ -49,8 +58,9 @@
     inset 0 1px 1px 0 rgba(255, 255, 255, 0.55);
   --window-shadow: 0 2px 8px 0 rgba(26, 23, 20, 0.07);
   --overlay-shadow: 0 10px 28px rgba(26, 23, 20, 0.18);
-  /* Frosted glass is now CSS-only (no native NSVisualEffectView), so the blur
-     does the heavy lifting — stronger than when vibrancy backed it. */
+  /* Blur for the IN-PAGE overlays only (dropdowns over the conversation, toasts,
+     popovers) — there the backdrop is real page content, so backdrop-filter
+     works. The window shell's frost is native (NSGlassEffectView), not this. */
   --blur: 24px;
 
   --hairline: rgba(26, 23, 20, 0.12);
@@ -93,10 +103,12 @@ html, body {
 ::selection { background: rgba(68, 85, 122, 0.22); color: var(--fg); }
 
 /* ============================================================
-   The window shell — transparent so NSVisualEffectView shows
-   through. The neutral "liquid glass" look:
-   1. soft top-to-bottom cool-white gradient (the glass body)
-   2. light backdrop frost on top of the OS vibrancy
+   The window shell. The frost is the native NSGlassEffectView
+   (macOS 26 Liquid Glass) sitting behind the transparent webview;
+   #app only paints the light tint + rim ON TOP of it. The neutral
+   "liquid glass" look:
+   1. native Liquid Glass frost behind the webview (the real blur)
+   2. a light cool-white tint (--glass-grad) so charcoal text stays legible
    3. bright white rim border
    4. inset highlight on top edge + faint inner bottom shade
    5. native window drop shadow (from tauri.conf shadow:true)
@@ -109,12 +121,18 @@ html, body {
   flex-direction: column;
   border-radius: var(--radius);
   overflow: hidden;
+  /* Translucent tint painted OVER the native glass layer behind the webview.
+     No backdrop-filter here: the window is transparent, so there is nothing
+     in-page to blur — the frost comes from NSGlassEffectView (see main.ts). */
   background: var(--glass-grad);
-  backdrop-filter: blur(var(--blur)) saturate(1.08);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.08);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-inset);
 }
+
+/* No drag workaround needed any more: the frost is the native
+   NSGlassEffectView behind the webview, which doesn't suffer WebKit's
+   backdrop-filter re-sampling drop on a moving window. The `.dragging` class is
+   still toggled in main.ts but intentionally has no visual effect here. */
 
 #app::before { content: none; }
 #app > * { position: relative; z-index: 1; }
@@ -1032,9 +1050,8 @@ body.reply-window {
   border-radius: var(--radius);
   overflow: hidden;
   border: 1px solid var(--glass-border);
+  /* Tint over the native glass layer; no backdrop-filter (see #app note). */
   background: var(--glass-grad);
-  backdrop-filter: blur(var(--blur)) saturate(1.08);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.08);
   box-shadow: var(--glass-inset);
   transform-origin: top center;
   animation: reply-appear 0.22s cubic-bezier(0.2, 0.9, 0.4, 1);
@@ -1540,24 +1557,14 @@ body.reply-window {
 }
 #app > #actions-menu.hidden { display: none; }
 
-/* Idle float mode — when the menu opens over an empty bar, the window grows to
-   fit the dropdown but the bar must stay bar-sized. Make #app transparent and
-   move the glass onto the bar itself, so only the bar pill + the floating
-   dropdown show, with transparent desktop around them. */
-#app.menu-float {
-  background: transparent;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border-color: transparent;
-  box-shadow: none;
-}
+/* Idle float mode — the menu opens over an empty bar and the window grows to
+   fit the dropdown. The native NSGlassEffectView fills the whole window, so the
+   gap below the bar is already frosted; there's nothing to "float over the
+   desktop" any more. Keep #app as one uniform glass panel (inherit the base
+   #app glass) and let the bar sit transparently on it, with the menu card on
+   top. No CSS backdrop-filter — the frost is native. */
 #app.menu-float .bar {
-  background: var(--glass-grad);
-  backdrop-filter: blur(var(--blur)) saturate(1.08);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.08);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius);
-  box-shadow: var(--glass-inset);
+  background: transparent;
 }
 
 .actions-row {

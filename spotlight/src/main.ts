@@ -5,6 +5,8 @@ import MarkdownIt from "markdown-it";
 // @ts-ignore — no published types
 import mdKatex from "@vscode/markdown-it-katex";
 import "katex/dist/katex.min.css";
+// @ts-ignore — types ship in dist but editor resolution can lag
+import { setLiquidGlassEffect } from "tauri-plugin-liquid-glass-api";
 
 const MIN_HEIGHT = 52;
 const MAX_HEIGHT = 720;
@@ -29,6 +31,15 @@ const statusLine = document.getElementById("status") as HTMLDivElement;
 const commandsEl = document.getElementById("commands") as HTMLDivElement;
 const attachmentsEl = document.getElementById("attachments") as HTMLDivElement;
 const win = getCurrentWindow();
+
+// Turn on native macOS Liquid Glass behind the transparent webview. This is the
+// real frost — CSS backdrop-filter can't blur the desktop through a transparent
+// window, so #app only paints the tint/rim on top of this layer. cornerRadius
+// matches --radius (8px). Safe no-op on unsupported platforms; wrapped so a
+// failure never blocks app boot.
+setLiquidGlassEffect({ cornerRadius: 8 }).catch((e: unknown) =>
+  console.warn("[spotlight] liquid glass unavailable:", e),
+);
 
 const pinBtn = document.getElementById("pin-btn") as HTMLButtonElement | null;
 const recordBtn = document.getElementById("record-btn") as HTMLButtonElement | null;
@@ -1721,7 +1732,42 @@ window.addEventListener("resize", () => {
   fitWindow();
 });
 
+// True while a native window drag (win.startDragging) is in flight.
+// Programmatic resizes (fitWindow → resize_height/setFrame) MUST be suppressed
+// during a drag: AppKit's drag loop and our own setFrame both mutate the window
+// frame, and the race makes the window jump/teleport ("glitch out") when you
+// drag-and-click. We re-fit once after the drag settles.
+let isDragging = false;
+let dragEndTimer: number | null = null;
+function endDragSoon(delay: number) {
+  if (dragEndTimer !== null) window.clearTimeout(dragEndTimer);
+  dragEndTimer = window.setTimeout(() => {
+    isDragging = false;
+    dragEndTimer = null;
+    app?.classList.remove("dragging");
+    requestGlassRepaint(); // re-sample the blur now that the window is still
+    fitWindow(); // reconcile any size change we suppressed mid-drag
+  }, delay);
+}
+async function beginWindowDrag() {
+  if (isDragging) return; // never open two concurrent drag sessions
+  isDragging = true;
+  // Solidify the glass for the whole drag so a dropped backdrop-filter frame
+  // can't show the desktop through the bar (see #app.dragging in style.css).
+  app?.classList.add("dragging");
+  endDragSoon(600); // fallback clear if it turns out to be a plain click (no move)
+  try {
+    await win.startDragging();
+  } catch {}
+}
+// Each native move extends the suppression window; 150ms after the last move
+// we consider the drag settled and re-enable auto-fit.
+void win.onMoved(() => {
+  if (isDragging) endDragSoon(150);
+});
+
 function fitWindow() {
+  if (isDragging) return; // don't fight the native drag's setFrame
   if (fitPending) return;
   fitPending = true;
   requestAnimationFrame(() => {
@@ -2851,7 +2897,7 @@ win.onFocusChanged(({ payload: focused }) => {
 document.addEventListener("mousedown", (e) => {
   if (e.metaKey) {
     e.preventDefault();
-    win.startDragging();
+    void beginWindowDrag();
   }
 });
 
@@ -2872,7 +2918,7 @@ response.addEventListener("mousedown", (e) => {
   ) {
     return;
   }
-  win.startDragging();
+  void beginWindowDrag();
 });
 
 const ro = new ResizeObserver(() => {

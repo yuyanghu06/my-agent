@@ -989,9 +989,19 @@ async fn network_info() -> Result<NetworkInfo, String> {
         }
         if let Ok(out) = Command::new(p).args(["ip", "-4"]).output() {
             if out.status.success() {
-                let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !ip.is_empty() {
-                    info.tailscale_ip = Some(ip);
+                // The Mac App Store Tailscale CLI exits 0 but prints an error
+                // string to stdout when its GUI isn't running/logged in (e.g.
+                // "The Tailscale GUI failed to start: … (Tailscale.CLIError
+                // error 3.)"). Exit status alone is not enough — only accept a
+                // line that actually parses as an IPv4 address, otherwise the
+                // error text leaks into the share URL / listening status.
+                let out_str = String::from_utf8_lossy(&out.stdout);
+                if let Some(ip) = out_str
+                    .lines()
+                    .map(|l| l.trim())
+                    .find(|l| l.parse::<std::net::Ipv4Addr>().is_ok())
+                {
+                    info.tailscale_ip = Some(ip.to_string());
                 }
             }
         }
@@ -1173,6 +1183,14 @@ fn main() {
     let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
 
     tauri::Builder::default()
+        // Native macOS Liquid Glass behind the transparent webview. On macOS 26
+        // (Tahoe) this is NSGlassEffectView; older OSes fall back to
+        // NSVisualEffectView. The actual glass is turned on per-window from the
+        // frontend via setLiquidGlassEffect() so we can match each window's
+        // corner radius. CSS only paints the tint/rim ON TOP of this layer —
+        // backdrop-filter alone can't frost the desktop through a transparent
+        // window, which is why the CSS-only approach looked flat.
+        .plugin(tauri_plugin_liquid_glass::init())
         // Intentionally NOT using tauri-plugin-window-state — restoring the
         // previous height on launch fights snapToMin and produces a huge
         // empty window on first show. We always want fresh launches to open

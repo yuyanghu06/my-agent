@@ -11,10 +11,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-global-shortcut = "2"
+# Native macOS 26 Liquid Glass (NSGlassEffectView), falls back to
+# NSVisualEffectView on older OSes. Replaces the unused window-vibrancy dep —
+# CSS backdrop-filter cannot blur the desktop behind a transparent window, so
+# the frost must come from a native effect view behind the transparent webview.
+tauri-plugin-liquid-glass = "0.1.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-window-vibrancy = "0.5"
 objc = "0.2"
 cocoa = "0.26"
 

@@ -4,10 +4,18 @@ import MarkdownIt from "markdown-it";
 // @ts-ignore — no published types
 import mdKatex from "@vscode/markdown-it-katex";
 import "katex/dist/katex.min.css";
+// @ts-ignore — types ship in dist but editor resolution can lag
+import { setLiquidGlassEffect } from "tauri-plugin-liquid-glass-api";
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 md.use((mdKatex as any).default ?? mdKatex, { throwOnError: false, strict: false });
 const win = getCurrentWindow();
+
+// Native Liquid Glass behind this transparent reply window (matches #reply-app's
+// 8px radius). See main.ts for the full rationale. Safe no-op off macOS 26.
+setLiquidGlassEffect({ cornerRadius: 8 }).catch((e: unknown) =>
+  console.warn("[spotlight] liquid glass unavailable:", e),
+);
 
 const params = new URLSearchParams(
   location.search ? location.search.slice(1) : location.hash.slice(1),
