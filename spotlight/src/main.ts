@@ -847,6 +847,18 @@ function parseShareUrl(s: string): { host: string; port: number; token: string }
 // ============================================================
 
 type ImageAttachment = { path: string; dataUrl: string };
+
+// Resolve an image's <img src>. Freshly-attached images carry an inline
+// dataUrl; restored history images have it trimmed (to keep sessions.json
+// small) and instead reference the file on disk, served via Tauri's asset
+// protocol from `path`.
+function imgSrc(img: ImageAttachment): string {
+  if (img.dataUrl) return img.dataUrl;
+  if (img.path) {
+    try { return convertFileSrc(img.path); } catch { return ""; }
+  }
+  return "";
+}
 type FileAttachment = { path: string; name: string; size: number };
 type PastedText = { id: string; content: string; preview: string };
 
@@ -1293,7 +1305,7 @@ function createTurn(opts: {
     const imgRow = document.createElement("div");
     imgRow.className = "history-images";
     imgRow.innerHTML = opts.images
-      .map((img) => `<img class="history-img" src="${escape(img.dataUrl)}" alt="" />`)
+      .map((img) => `<img class="history-img" src="${escape(imgSrc(img))}" alt="" />`)
       .join("");
     container.appendChild(imgRow);
   }
@@ -2281,7 +2293,7 @@ async function send(query: string, opts: { sideOf?: string; injectInto?: string 
         const imgRow = document.createElement("div");
         imgRow.className = "history-images inline-injection-imgs";
         imgRow.innerHTML = imgs
-          .map((img) => `<img class="history-img" src="${escape(img.dataUrl)}" alt="" />`)
+          .map((img) => `<img class="history-img" src="${escape(imgSrc(img))}" alt="" />`)
           .join("");
         turn.contentEl.appendChild(imgRow);
       }
@@ -2894,6 +2906,7 @@ win.onFocusChanged(({ payload: focused }) => {
   composer.focus();
 });
 
+// Cmd+drag always moves the window, from anywhere, immediately.
 document.addEventListener("mousedown", (e) => {
   if (e.metaKey) {
     e.preventDefault();
@@ -2901,24 +2914,43 @@ document.addEventListener("mousedown", (e) => {
   }
 });
 
-// Drag in non-text areas of the response stream
-response.addEventListener("mousedown", (e) => {
-  if (e.button !== 0) return;
-  const rect = response.getBoundingClientRect();
-  if (e.clientX > rect.right - 14) return; // scrollbar
-  const target = e.target as HTMLElement;
-  if (
-    target.closest(".text-seg") ||
-    target.closest(".user-query") ||
-    target.closest(".error") ||
-    target.closest(".reply-composer") ||
-    target.closest(".turn-actions") ||
-    target.closest(".history-paste") ||
-    target.closest(".history-img")
-  ) {
-    return;
-  }
-  void beginWindowDrag();
+// Press-and-hold-to-drag, scoped to the INPUT BAR only (including its
+// textarea). Clicking and holding in the bar, then moving past a small
+// threshold, repositions the window. A press that DOESN'T move stays a normal
+// click (focus the textarea, place the caret), so typing still works. The bar's
+// empty space already drags natively via CSS -webkit-app-region; this handler
+// adds the same behavior over the textarea (which is -webkit-app-region:no-drag
+// so it stays typeable). Everything BELOW the bar — the response/chat stream,
+// command palette, panels — never initiates a window drag, so text there
+// selects and scrolls normally.
+//
+// Exempted within the bar: the actions (⋯) button and any link.
+document.addEventListener("mousedown", (e) => {
+  if (e.button !== 0 || e.metaKey) return; // left only; Cmd-drag handled above
+  if (isDragging) return;
+  const t = e.target as HTMLElement;
+  if (!t.closest(".bar")) return;            // ONLY the input bar drags
+  if (t.closest("button, a")) return;        // let bar controls click through
+
+  const startX = e.clientX;
+  const startY = e.clientY;
+  let started = false;
+  const onMove = (ev: MouseEvent) => {
+    if (started) return;
+    // Only a deliberate hold-and-move (past 5px) becomes a drag; a smaller
+    // movement stays a click so caret placement in the textarea still works.
+    if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 5) {
+      started = true;
+      cleanup();
+      void beginWindowDrag();
+    }
+  };
+  const cleanup = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", cleanup);
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", cleanup);
 });
 
 const ro = new ResizeObserver(() => {
@@ -3087,7 +3119,10 @@ function saveSession(ws: Workspace = activeWs) {
         query: t.query,
         fullText: t.fullText,
         pastes: t.pastedTexts,
-        images: t.images,
+        // Persist only a lightweight image REFERENCE (path), not the base64
+        // dataUrl — that bloated sessions.json to ~16MB (and choked the iOS
+        // fetch). The bytes still live on disk in spotlight-images/ at `path`.
+        images: (t.images ?? []).map((im) => ({ path: im.path, dataUrl: "" })),
         files: t.files,
       })),
     };
@@ -3099,6 +3134,36 @@ function saveSession(ws: Workspace = activeWs) {
 }
 
 /** Rebuild saved turns into the currently-mounted workspace's DOM + globals. */
+// Render a saved turn's fullText, turning embedded mid-stream injection markers
+// into proper user bubbles. The marker line ("[user injected mid-stream]: X")
+// is produced by send(); here we reverse it for display.
+const INJECTION_MARKER = /\n*\[user injected mid-stream\]:\s*([\s\S]*?)\n+/g;
+function renderFullTextWithInjections(turn: Turn, fullText: string) {
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  const addText = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const el = document.createElement("div");
+    el.className = "text-seg";
+    (el as any)._content = trimmed;
+    el.innerHTML = md.render(trimmed);
+    turn.contentEl.appendChild(el);
+    turn.segments.push(el);
+    enhanceCodeBlocks(el);
+  };
+  INJECTION_MARKER.lastIndex = 0;
+  while ((m = INJECTION_MARKER.exec(fullText)) !== null) {
+    addText(fullText.slice(lastIndex, m.index));
+    const inj = document.createElement("div");
+    inj.className = "inline-injection";
+    inj.textContent = (m[1] || "").trim();
+    turn.contentEl.appendChild(inj);
+    lastIndex = INJECTION_MARKER.lastIndex;
+  }
+  addText(fullText.slice(lastIndex));
+}
+
 function rebuildTurnsFromSaved(s: SavedSession) {
   for (const t of s.turns) {
     const turn = createTurn({
@@ -3109,14 +3174,12 @@ function rebuildTurnsFromSaved(s: SavedSession) {
     });
     turns.push(turn);
     if (t.fullText) {
-      const el = document.createElement("div");
-      el.className = "text-seg";
-      (el as any)._content = t.fullText;
-      el.innerHTML = md.render(t.fullText);
-      turn.contentEl.appendChild(el);
+      // fullText interleaves assistant prose with mid-stream user injections,
+      // tagged by the internal "[user injected mid-stream]: …" marker. Split on
+      // the marker so injections render as user bubbles (not literal marker
+      // text) and the surrounding assistant text renders as markdown.
+      renderFullTextWithInjections(turn, t.fullText);
       turn.fullText = t.fullText;
-      turn.segments.push(el);
-      enhanceCodeBlocks(el);
     }
     finalizeTurn(turn);
   }
