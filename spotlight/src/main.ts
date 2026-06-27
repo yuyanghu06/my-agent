@@ -26,6 +26,7 @@ const composerWrap = document.getElementById("composer-wrap") as HTMLDivElement;
 const response = document.getElementById("response") as HTMLDivElement;
 const responseInner = document.getElementById("response-inner") as HTMLDivElement;
 const bar = document.querySelector(".bar") as HTMLDivElement;
+const tabBar = document.getElementById("tab-bar") as HTMLDivElement | null;
 const app = document.getElementById("app") as HTMLDivElement | null;
 const statusLine = document.getElementById("status") as HTMLDivElement;
 const commandsEl = document.getElementById("commands") as HTMLDivElement;
@@ -244,7 +245,7 @@ function openActionsMenu() {
   const idle =
     (settingsPanel?.classList.contains("hidden") ?? true) &&
     response.classList.contains("empty");
-  const needed = bar.offsetHeight + 196;
+  const needed = bar.offsetHeight + tabBarH() + 196;
   if (idle) {
     // Float the menu over the bar: keep the bar bar-sized, make the rest of the
     // window transparent so no tall glass box appears below the bar.
@@ -518,18 +519,46 @@ function modelLabel(id: string): string {
   return MODELS.find((m) => m.id === id)?.label ?? id ?? "Default";
 }
 
-/** Re-send the active model to the daemon after a restart, retrying while the
- *  socket comes back up. */
-async function repushModelAfterRestart() {
-  for (let i = 0; i < 8; i++) {
+/** After a daemon restart, wait for the socket to come back up, re-push the
+ *  active model (the daemon holds it in memory only), and re-arm every open
+ *  workspace so its conversation RESUMES instead of being wiped. The rendered
+ *  turns stay on screen — the user just keeps going where they left off. */
+async function rearmSessionsAfterRestart() {
+  // Probe the socket until the restarted daemon accepts connections. set_model
+  // doubles as the probe and the model re-push.
+  let up = false;
+  for (let i = 0; i < 12; i++) {
     await new Promise((r) => setTimeout(r, 400));
     try {
       await invoke("set_model", { model: currentModel });
-      return;
+      up = true;
+      break;
     } catch {
       /* socket not ready yet — retry */
     }
   }
+  if (!up) return;
+  // Re-arm each workspace's tab. The restarted daemon has no per-tab state, so
+  // tell it which claude session UUID to --resume on the tab's next query.
+  syncActiveWorkspace();
+  for (const w of workspaces) {
+    // Re-allocate non-default tab ids: the daemon's tab counter reset to 0 on
+    // restart, so a future "new tab" could otherwise collide onto a live tab.
+    if (w.tabId !== "default") {
+      try {
+        w.tabId = await invoke<string>("new_tab");
+      } catch {
+        /* keep the old id if allocation fails */
+      }
+    }
+    const uuid = w === activeWs ? currentClaudeSessionId : w.claudeSessionId;
+    if (uuid) {
+      void invoke("resume_session", { uuid, tabId: w.tabId }).catch(() => {});
+    } else {
+      void invoke("start_fresh_session", { tabId: w.tabId }).catch(() => {});
+    }
+  }
+  persistOpenWorkspaces();
 }
 
 /** Persist the model into settings.json (preserving other keys). */
@@ -895,11 +924,11 @@ const COMMANDS: Command[] = [
     run: async () => {
       try {
         await invoke("restart_daemon");
-        // Daemon holds the active model in memory only — re-push once the
-        // socket is back up (launchctl restart takes a beat).
-        if (currentModel) void repushModelAfterRestart();
-        showToast("Daemon restarted");
-        clearAll();
+        // Keep the conversation on screen — re-arm every open session so it
+        // resumes against the freshly restarted daemon (re-pushes the model
+        // too, once the socket is back up).
+        showToast("Daemon restarted — session kept");
+        void rearmSessionsAfterRestart();
       } catch (e) {
         showError(String(e));
       }
@@ -1161,11 +1190,74 @@ async function closeWorkspace(ws: Workspace) {
       const next = workspaces[Math.min(idx, workspaces.length - 1)];
       loadWorkspace(next);
     }
+  } else {
+    // Closing a background tab doesn't remount anything, so refresh the tab
+    // strip / badge explicitly (loadWorkspace does it on the active path).
+    updateSessionsBadge();
   }
   persistOpenWorkspaces();
 }
 
+/** Height the tab strip currently occupies (0 when hidden) — folded into the
+ *  window-fit math so the tabs never clip the bar or content. */
+function tabBarH(): number {
+  return tabBar && !tabBar.classList.contains("hidden") ? tabBar.offsetHeight : 0;
+}
+
+/** Render the open sessions as browser-style tabs above the bar. Hidden unless
+ *  more than one session is open. Switch / close / new are wired once below. */
+function renderTabBar() {
+  if (!tabBar) return;
+  if (workspaces.length <= 1) {
+    if (!tabBar.classList.contains("hidden")) {
+      tabBar.classList.add("hidden");
+      tabBar.innerHTML = "";
+      fitWindow();
+    }
+    return;
+  }
+  const wasHidden = tabBar.classList.contains("hidden");
+  tabBar.innerHTML =
+    workspaces
+      .map((w) => {
+        const isActive = w === activeWs;
+        const streaming = w === activeWs ? active : w.active;
+        const label = w.title || "New session";
+        return (
+          `<div class="tab${isActive ? " tab-active" : ""}" data-ws="${escape(w.localId)}" title="${escape(label)}">` +
+          `<span class="tab-dot${streaming ? " streaming" : ""}"></span>` +
+          `<span class="tab-label">${escape(label)}</span>` +
+          `<button class="tab-close" data-close="${escape(w.localId)}" title="Close session">×</button>` +
+          `</div>`
+        );
+      })
+      .join("") + `<button class="tab-new" title="New session">+</button>`;
+  tabBar.classList.remove("hidden");
+  if (wasHidden) fitWindow();
+}
+
+tabBar?.addEventListener("click", (e) => {
+  const el = e.target as HTMLElement;
+  if (el.closest(".tab-new")) {
+    void openWorkspace();
+    return;
+  }
+  const closeId = el.closest(".tab-close")?.getAttribute("data-close");
+  if (closeId) {
+    e.stopPropagation();
+    const w = workspaces.find((x) => x.localId === closeId);
+    if (w) void closeWorkspace(w);
+    return;
+  }
+  const tab = el.closest(".tab") as HTMLElement | null;
+  if (tab?.dataset.ws) {
+    const w = workspaces.find((x) => x.localId === tab.dataset.ws);
+    if (w) switchWorkspace(w);
+  }
+});
+
 function updateSessionsBadge() {
+  renderTabBar();
   if (!sessionsBtn) return;
   const n = workspaces.length;
   sessionsBtn.classList.toggle("multi", n > 1);
@@ -1790,7 +1882,7 @@ function fitWindow() {
     // this the textarea ends up below the window edge.
     const barNatural = bar.scrollHeight;
     const statusNatural = statusLine.offsetHeight;
-    const barNeeded = barNatural + statusNatural + 4;
+    const barNeeded = barNatural + statusNatural + tabBarH() + 4;
     if (barNeeded > cachedH + 1) {
       const target = Math.min(MAX_HEIGHT, barNeeded);
       animateHeightFast(cachedH, target);
@@ -1804,7 +1896,7 @@ function fitWindow() {
     // — .response is flex:1 1 auto and would inflate to the window height,
     // creating a runaway feedback loop).
     const contentH = responseInner.offsetHeight;
-    const chrome = bar.offsetHeight + statusLine.offsetHeight + 12;
+    const chrome = bar.offsetHeight + statusLine.offsetHeight + tabBarH() + 12;
     const responseAvailable = Math.max(0, cachedH - chrome);
     // Grow the window only when content would overflow the response area —
     // i.e., there's literally no more scroll room left. This means typing
@@ -1838,8 +1930,10 @@ async function snapToMin() {
     const inner = await win.innerSize();
     const wLogical = Math.round(inner.width / factor);
     const hLogical = Math.round(inner.height / factor);
-    if (hLogical !== MIN_HEIGHT) {
-      animateHeight(wLogical, hLogical, MIN_HEIGHT);
+    // Keep room for the tab strip (if showing) so snapping small never clips it.
+    const minH = MIN_HEIGHT + tabBarH();
+    if (hLogical !== minH) {
+      animateHeight(wLogical, hLogical, minH);
     }
   } catch {}
 }
@@ -2863,12 +2957,29 @@ composer.addEventListener("keydown", async (e) => {
   } else if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
     e.preventDefault();
     clearAll();
+  } else if (e.key === "t" && (e.metaKey || e.ctrlKey)) {
+    // Cmd/Ctrl+T — open a new session tab.
+    e.preventDefault();
+    void openWorkspace();
+  } else if (e.key === "w" && (e.metaKey || e.ctrlKey)) {
+    // Cmd/Ctrl+W — close the current session tab; hide the window if it's the
+    // only one open (don't recreate-and-clear out from under the user).
+    e.preventDefault();
+    if (workspaces.length > 1) void closeWorkspace(activeWs);
+    else win.hide();
+  } else if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
+    // Cmd/Ctrl+1..8 jump to that tab; Cmd/Ctrl+9 jumps to the last (browser
+    // convention). No-op if the index is out of range.
+    e.preventDefault();
+    const n = Number(e.key);
+    const target = n === 9 ? workspaces[workspaces.length - 1] : workspaces[n - 1];
+    if (target) switchWorkspace(target);
   } else if (e.key === "r" && e.metaKey && e.shiftKey) {
     e.preventDefault();
     try {
       await invoke("restart_daemon");
-      if (currentModel) void repushModelAfterRestart();
-      showToast("Daemon restarted");
+      showToast("Daemon restarted — session kept");
+      void rearmSessionsAfterRestart();
     } catch (err) {
       showToast(String(err));
     }
@@ -3129,6 +3240,8 @@ function saveSession(ws: Workspace = activeWs) {
     const all = (await loadSessions()).filter((s) => s.id !== ws.localId);
     all.unshift(snapshot);
     await writeSessions(all);
+    // Refresh tab labels now that this session's title reflects its content.
+    renderTabBar();
   }, 800);
   saveTimers.set(ws.localId, timer);
 }
@@ -3248,11 +3361,7 @@ async function openSavedSession(s: SavedSession) {
 }
 
 async function openSessionsPanel() {
-  const all = await loadSessions(true);
-  // Saved sessions that aren't already open as a workspace become the
-  // "reopen" list; open workspaces are shown at the top as live switchers.
-  const openIds = new Set(workspaces.map((w) => w.localId));
-  const saved = all.filter((s) => !openIds.has(s.id));
+  let all = await loadSessions(true);
 
   cancelHeightAnim();
   const wantedH = 480;
@@ -3274,38 +3383,48 @@ async function openSessionsPanel() {
     </div>`;
   const list = overlay.querySelector(".session-list") as HTMLDivElement;
 
-  const openRows = workspaces
-    .map((w) => {
-      const streaming = w === activeWs ? active : w.active;
-      const isActive = w === activeWs;
-      const label = (w === activeWs ? currentClaudeSessionId : w.claudeSessionId)
-        ? w.title
-        : w.title || "New session";
-      return (
-        `<div class="session-row ws-row${isActive ? " ws-active" : ""}" data-ws="${escape(w.localId)}">` +
-        `<div class="ws-dot${streaming ? " streaming" : ""}"></div>` +
-        `<div class="session-preview">${escape(label || "(empty)")}</div>` +
-        `${workspaces.length > 1 ? `<button class="ws-close" data-close="${escape(w.localId)}" title="Close session">×</button>` : ""}` +
-        `</div>`
-      );
-    })
-    .join("");
+  // Rebuild the list body from current state. Called on open and after any
+  // mutation (closing a session) so the panel stays open and just refreshes.
+  const renderList = () => {
+    // Saved sessions that aren't already open as a workspace become the
+    // "reopen" list; open workspaces are shown at the top as live switchers.
+    const openIds = new Set(workspaces.map((w) => w.localId));
+    const saved = all.filter((s) => !openIds.has(s.id));
 
-  const savedRows = saved
-    .map(
-      (s) =>
-        `<div class="session-row" data-id="${escape(s.id)}">` +
-        `<div class="session-preview">${escape(s.preview || "(empty)")}</div>` +
-        `<div class="session-meta">${new Date(s.savedAt).toLocaleString()} · ${s.turns.length} turn${s.turns.length === 1 ? "" : "s"}</div>` +
-        `</div>`,
-    )
-    .join("");
+    const openRows = workspaces
+      .map((w) => {
+        const streaming = w === activeWs ? active : w.active;
+        const isActive = w === activeWs;
+        const label = (w === activeWs ? currentClaudeSessionId : w.claudeSessionId)
+          ? w.title
+          : w.title || "New session";
+        return (
+          `<div class="session-row ws-row${isActive ? " ws-active" : ""}" data-ws="${escape(w.localId)}">` +
+          `<div class="ws-dot${streaming ? " streaming" : ""}"></div>` +
+          `<div class="session-preview">${escape(label || "(empty)")}</div>` +
+          `${workspaces.length > 1 ? `<button class="ws-close" data-close="${escape(w.localId)}" title="Close session">×</button>` : ""}` +
+          `</div>`
+        );
+      })
+      .join("");
 
-  list.innerHTML =
-    `<div class="session-group-label">OPEN</div>${openRows}` +
-    (savedRows
-      ? `<div class="session-group-label">SAVED</div>${savedRows}`
-      : "");
+    const savedRows = saved
+      .map(
+        (s) =>
+          `<div class="session-row" data-id="${escape(s.id)}">` +
+          `<div class="session-preview">${escape(s.preview || "(empty)")}</div>` +
+          `<div class="session-meta">${new Date(s.savedAt).toLocaleString()} · ${s.turns.length} turn${s.turns.length === 1 ? "" : "s"}</div>` +
+          `</div>`,
+      )
+      .join("");
+
+    list.innerHTML =
+      `<div class="session-group-label">OPEN</div>${openRows}` +
+      (savedRows
+        ? `<div class="session-group-label">SAVED</div>${savedRows}`
+        : "");
+  };
+  renderList();
 
   document.body.appendChild(overlay);
   const close = () => {
@@ -3328,15 +3447,18 @@ async function openSessionsPanel() {
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  list.addEventListener("click", (e) => {
+  list.addEventListener("click", async (e) => {
     const el = e.target as HTMLElement;
-    // Close button on an open workspace row.
+    // Close button on an open workspace row — close the session but KEEP the
+    // panel open, refreshing it so the now-closed session drops into SAVED.
     const closeId = el.closest(".ws-close")?.getAttribute("data-close");
     if (closeId) {
       e.stopPropagation();
       const w = workspaces.find((x) => x.localId === closeId);
-      if (w) void closeWorkspace(w);
-      close();
+      if (w) await closeWorkspace(w);
+      // closeWorkspace saved the closed session; reload so it shows under SAVED.
+      all = await loadSessions(true);
+      renderList();
       return;
     }
     const row = el.closest(".session-row") as HTMLElement | null;
